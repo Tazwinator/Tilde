@@ -75,7 +75,9 @@ pub struct WordCard {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+// `rename_all` only renames the variant tags; the fields inside each variant
+// need `rename_all_fields` to come out camelCase like everything else.
+#[serde(tag = "type", rename_all = "snake_case", rename_all_fields = "camelCase")]
 pub enum Round {
     /// Intro card shown the first time a new word is encountered.
     NewWord {

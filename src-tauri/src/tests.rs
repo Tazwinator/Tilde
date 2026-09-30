@@ -64,3 +64,103 @@ fn commands_that_read_settings_do_not_deadlock() {
         assert_eq!(detail.word.word_id, hits[0].word_id);
     });
 }
+
+/// Top-level keys of each `Round` variant as declared in `src/lib/contract.ts`,
+/// keyed by the variant's `type` tag.
+fn ts_round_keys() -> HashMap<String, Vec<String>> {
+    let ts = include_str!("../../src/lib/contract.ts");
+    let start = ts.find("export type Round =").expect("Round type in contract.ts");
+    let end = start + ts[start..].find(";\n\n").expect("end of Round type");
+    let mut out = HashMap::new();
+    for variant in ts[start..end].split("| ({").skip(1) {
+        let body = variant.split("})").next().unwrap();
+        let mut keys: Vec<String> = body
+            .split(';')
+            .filter_map(|field| field.split(':').next())
+            .map(|k| k.trim().trim_end_matches('?').to_string())
+            .filter(|k| !k.is_empty())
+            .collect();
+        let tag = body.split('"').nth(1).expect("type tag").to_string();
+        keys.sort();
+        out.insert(tag, keys);
+    }
+    out
+}
+
+#[test]
+fn round_wire_format_matches_contract_ts() {
+    let word = tilde_core::types::WordCard {
+        word_id: 1,
+        lemma: "hablar".into(),
+        pos: None,
+        rank: 1,
+        gloss_en: None,
+        gloss_es: None,
+        level: "A1".into(),
+    };
+    let samples = vec![
+        Round::NewWord { id: 0, word, example_es: None, example_en: None, audio_base64: None },
+        Round::Choice {
+            id: 0,
+            word_id: 1,
+            prompt: String::new(),
+            prompt_lang: "es".into(),
+            options: vec![],
+            answer_index: 0,
+            audio_base64: None,
+        },
+        Round::Match { id: 0, pairs: vec![] },
+        Round::Listen { id: 0, word_id: 1, audio_base64: None, options: vec![], answer_index: 0 },
+        Round::ListenType {
+            id: 0,
+            word_id: 1,
+            sentence_es: String::new(),
+            audio_base64: None,
+            answer: String::new(),
+        },
+        Round::Build {
+            id: 0,
+            word_id: 1,
+            sentence_es: String::new(),
+            sentence_en: String::new(),
+            tiles: vec![],
+            answer: String::new(),
+        },
+        Round::Cloze {
+            id: 0,
+            word_id: 1,
+            sentence_es: String::new(),
+            sentence_en: String::new(),
+            options: vec![],
+            answer_index: 0,
+        },
+        Round::Conjugation {
+            id: 0,
+            word_id: 1,
+            verb: String::new(),
+            tense: String::new(),
+            person: String::new(),
+            answer: String::new(),
+            hint: String::new(),
+        },
+        Round::ReviewCard {
+            id: 0,
+            word_id: 1,
+            es: String::new(),
+            en: String::new(),
+            example_es: None,
+            example_en: None,
+            audio_base64: None,
+        },
+    ];
+
+    let mut rust: HashMap<String, Vec<String>> = HashMap::new();
+    for round in &samples {
+        let json = serde_json::to_value(round).unwrap();
+        let obj = json.as_object().unwrap();
+        let mut keys: Vec<String> = obj.keys().cloned().collect();
+        keys.sort();
+        rust.insert(obj["type"].as_str().unwrap().to_string(), keys);
+    }
+    assert_eq!(rust, ts_round_keys());
+}
