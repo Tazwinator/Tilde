@@ -10,7 +10,7 @@ vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 /target
 /data
-src-tauri/resources/*.db
 src-tauri/resources/*.db-shm
 src-tauri/resources/*.db-wal
+src-tauri/resources/*.db.tmp
 src-tauri/gen/schemas

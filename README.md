@@ -20,17 +20,19 @@ on two evidence-based ideas:
 
 ## Features
 
-- **Five game modes** feeding one smart review deck: word matching,
+- **Six game modes** feeding one smart review deck: word matching,
   multiple choice, listening drills, sentence building, cloze deletion and
-  a full Castilian **verb conjugation trainer** (incl. vosotros).
+  a full Castilian **verb conjugation trainer** (incl. vosotros), drilled
+  from Wiktionary's conjugation tables.
 - **Placement quiz** — a few questions to figure out what you already know.
 - **Audio sidecar mode** — a dimmed, keyboard-only listening drill screen
   designed to run next to a film or series.
 - **Sentence mining** — drop in an `.srt` subtitle file from a show you
   watch; Tilde extracts sentences, matches them to the dictionary and can
   add the words to your deck.
-- **Word explorer** — 12,000+ frequency-ranked words with English glosses,
-  example sentences and conjugation tables.
+- **Word explorer** — 12,000 frequency-ranked words (lemmas, so *tengo* and
+  *tiene* count towards *tener*) with English glosses, example sentences and
+  conjugation tables.
 - **Offline text-to-speech** — a real Castilian neural voice (Piper), with
   every word and sentence speakable.
 - **Stats without shame** — weekly minutes, XP, vocabulary growth curves.
@@ -45,35 +47,48 @@ Prerequisites: Rust, Node.js, `webkit2gtk-4.1` (see
 [Tauri prerequisites](https://tauri.app/start/prerequisites/)).
 
 ```sh
-# 1. Build the offline content database (downloads open data once)
-cargo run --release -p tilde-pipeline
-
-# 2. Install the TTS voice (optional but recommended)
+# 1. Install the TTS voice (optional but recommended)
 ./scripts/setup-tts.sh
 
-# 3. Run in dev mode
+# 2. Run in dev mode (hot reload + webview inspector)
 npm install
 npm run tauri dev
 
-# 4. Or build a release binary / installer
+# 3. Or build a release binary / installer
 npm run tauri build
 ```
 
+The word database (`src-tauri/resources/content.db`) is committed, so a
+fresh clone builds and tests straight away. Rebuild it only when changing
+the content pipeline:
+
+```sh
+cargo run --release -p tilde-pipeline   # downloads ~100 MB of open data into data/ once
+```
+
+Hand-made corrections to the data (gloss overrides, homographs) live in
+`crates/tilde-pipeline/curation/`.
+
+Tests: `cargo test --workspace` and `npm test`.
+
 ## Data sources & attribution
 
-- Frequency list: [OpenSubtitles via FrequencyWords](https://github.com/hermitdave/FrequencyWords) (CC-BY-SA 4.0)
-- English glosses: [FreeDict spa-eng](https://freedict.org/) (GPL) and the
-  [MUSE en-es bilingual dictionary](https://github.com/facebookresearch/MUSE) (CC-BY-SA)
-- Example sentences: [Tatoeba](https://tatoeba.org/) via
-  [OPUS](https://opus.nlpl.eu/) (CC-BY 2.0)
+- Frequency list: [FrequencyWords](https://github.com/hermitdave/FrequencyWords)
+  by Hermit Dave, from OpenSubtitles 2018 (CC BY-SA 4.0)
+- Lemmas, English glosses, inflections and conjugation tables:
+  [Wiktionary](https://en.wiktionary.org/) contributors, via
+  [kaikki.org](https://kaikki.org/) (CC BY-SA 4.0)
+- Example sentences: [Tatoeba](https://tatoeba.org/) contributors via
+  [OPUS](https://opus.nlpl.eu/) (CC BY 2.0 FR)
 - TTS: [Piper](https://github.com/rhasspy/piper) with the
   `es_ES-davefx-medium` voice
 
 ## License
 
 The code in this repository is released under the [MIT License](LICENSE).
-Third-party data used to build the content database keeps its own licenses
-(see attribution above).
+The word database built from the data above (`src-tauri/resources/content.db`)
+is shared under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/);
+see [its notice](src-tauri/resources/CONTENT_LICENSE.md).
 
 ## Multi-language future
 
