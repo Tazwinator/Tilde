@@ -4,6 +4,7 @@
   import { api } from "$lib/api";
   import { playRoundAudio } from "$lib/audio";
   import { sfx } from "$lib/sfx";
+  import { grade } from "$lib/grading";
   import type { Round, SessionStart, SessionSummary } from "$lib/contract";
 
   let session = $state<SessionStart | null>(null);
@@ -57,7 +58,7 @@
   async function answerTyped(e: Event) {
     e.preventDefault();
     if (!round || round.type !== "listen_type" || submitting) return;
-    const ok = typed.trim().toLowerCase() === round.answer.trim().toLowerCase();
+    const ok = grade(typed, round.answer) !== "wrong";
     if (ok) sfx.correct(0);
     else sfx.wrong();
     await submit(ok);

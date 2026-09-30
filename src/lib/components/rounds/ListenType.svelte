@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Round } from "$lib/contract";
-  import { norm } from "$lib/grading";
+  import { grade } from "$lib/grading";
   import { playRoundAudio } from "$lib/audio";
   import { sfx } from "$lib/sfx";
 
@@ -16,6 +16,7 @@
 
   let typed = $state("");
   let checked = $state<null | boolean>(null);
+  let accentSlip = $state(false);
 
   const lenientOk = $derived(checked !== null && checked);
 
@@ -26,7 +27,10 @@
   function submit(e: Event) {
     e.preventDefault();
     if (checked !== null || typed.trim() === "") return;
-    const ok = norm(typed) === norm(round.answer);
+    // hearing a sentence doesn't tell you its accents: count them, but show the spelling
+    const verdict = grade(typed, round.answer);
+    const ok = verdict !== "wrong";
+    accentSlip = verdict === "accents";
     checked = ok;
     if (ok) sfx.correct(0);
     else sfx.wrong();
@@ -61,6 +65,8 @@
     />
     {#if checked === false}
       <p class="mt-3 text-center text-lg text-white/70">Casi — era: <strong class="text-lime-500">{round.answer}</strong></p>
+    {:else if accentSlip}
+      <p class="mt-3 text-center text-lg text-white/70">¡Bien! Con sus tildes: <strong class="text-lime-500">{round.answer}</strong></p>
     {/if}
     {#if checked === null}
       <button

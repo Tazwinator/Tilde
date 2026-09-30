@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Round } from "$lib/contract";
-  import { norm } from "$lib/grading";
+  import { grade } from "$lib/grading";
   import { sfx } from "$lib/sfx";
 
   type RoundT = Extract<Round, { type: "conjugation" }>;
@@ -15,11 +15,15 @@
 
   let typed = $state("");
   let checked = $state<null | boolean>(null);
+  let accentSlip = $state(false);
 
   function submit(e: Event) {
     e.preventDefault();
     if (checked !== null || typed.trim() === "") return;
-    const ok = norm(typed) === norm(round.answer);
+    // the accent is part of the form here: "hablo" (I speak) is not "habló" (he spoke)
+    const verdict = grade(typed, round.answer);
+    const ok = verdict === "right";
+    accentSlip = verdict === "accents";
     checked = ok;
     if (ok) sfx.correct(0);
     else sfx.wrong();
@@ -68,7 +72,9 @@
       placeholder="Escribe la forma…"
       aria-label="Forma del verbo"
     />
-    {#if checked === false}
+    {#if checked === false && accentSlip}
+      <p class="mt-3 text-center text-lg text-white/70">¡Casi! Solo falta la tilde: <strong class="text-lime-500">{round.answer}</strong></p>
+    {:else if checked === false}
       <p class="mt-3 text-center text-lg text-white/70">Casi — era: <strong class="text-lime-500">{round.answer}</strong></p>
     {/if}
     {#if checked === null}
