@@ -560,24 +560,12 @@ fn srt_import(state: tauri::State<AppState>, title: String, text: String) -> Imp
     let lines = tilde_core::srt::parse_subtitles(&text);
     let sentences = tilde_core::srt::lines_to_sentences(&lines);
 
-    // build in-memory matcher over the forms table (accent-insensitive)
-    let conn = state.user.lock().unwrap();
-    let mut map: HashMap<String, Vec<i64>> = HashMap::new();
-    {
-        let mut stmt = conn.prepare("SELECT form, word_id FROM forms").unwrap();
-        let mut rows = stmt.query([]).unwrap();
-        while let Some(row) = rows.next().unwrap() {
-            let form: String = row.get(0).unwrap();
-            let wid: i64 = row.get(1).unwrap();
-            map.entry(tilde_core::srt::strip_accents(&form))
-                .or_default()
-                .push(wid);
-        }
-    }
+    // build in-memory matcher over the content DB's forms table (accent-insensitive)
     let matcher = DbMatcher {
-        map,
+        map: state.content.lock().unwrap().form_index(),
         _marker: std::marker::PhantomData,
     };
+    let conn = state.user.lock().unwrap();
 
     let mut added = 0i64;
     let mut word_freq: HashMap<i64, i64> = HashMap::new();

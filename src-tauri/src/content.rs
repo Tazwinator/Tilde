@@ -1,6 +1,7 @@
 //! Read-only access to the bundled content database.
 
 use rusqlite::Connection;
+use std::collections::HashMap;
 use tilde_core::types::WordCard;
 
 pub struct ContentDb {
@@ -159,6 +160,23 @@ impl ContentDb {
         stmt.query_map(rusqlite::params![limit], word_from_row)
             .map(|rows| rows.filter_map(|r| r.ok()).collect())
             .unwrap_or_default()
+    }
+
+    /// Every known form (lemmas, plurals, conjugations) keyed accent-insensitively,
+    /// for matching free text such as imported subtitles back to word ids.
+    pub fn form_index(&self) -> HashMap<String, Vec<i64>> {
+        let mut stmt = self.conn.prepare("SELECT form, word_id FROM forms").unwrap();
+        let rows: Vec<(String, i64)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default();
+        let mut map: HashMap<String, Vec<i64>> = HashMap::new();
+        for (form, word_id) in rows {
+            map.entry(tilde_core::srt::strip_accents(&form))
+                .or_default()
+                .push(word_id);
+        }
+        map
     }
 
     pub fn is_verb(&self, word_id: i64) -> bool {

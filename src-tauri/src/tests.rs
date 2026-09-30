@@ -164,3 +164,18 @@ fn round_wire_format_matches_contract_ts() {
     }
     assert_eq!(rust, ts_round_keys());
 }
+
+#[test]
+fn srt_import_matches_words_from_content_db() {
+    let srt = "1\n00:00:01,000 --> 00:00:03,000\nNo quiero ir a la escuela hoy.\n\n\
+               2\n00:00:04,000 --> 00:00:06,000\n¿Dónde está la casa de tu madre?\n\n\
+               3\n00:00:07,000 --> 00:00:09,000\nMi hermano vive en Madrid con su mujer.\n";
+    let (report, listed) = with_app(move |app| {
+        let report = srt_import(app.state(), "test.srt".into(), srt.into());
+        (report, sentences_list(app.state()))
+    });
+    assert_eq!(report.sentences_found, 3);
+    assert!(report.sentences_added > 0, "{report:?}");
+    assert!(!report.top_words.is_empty());
+    assert_eq!(listed.len() as i64, report.sentences_added);
+}
