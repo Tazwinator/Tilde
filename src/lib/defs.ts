@@ -14,3 +14,24 @@ export function glossText(w: Glossy, definitionLang: string): string {
 }
 
 export type Glossable = WordCard | WordHit;
+
+const POS_LABELS: Record<string, string> = {
+  noun: "sustantivo",
+  verb: "verbo",
+  adj: "adjetivo",
+  adv: "adverbio",
+  pron: "pronombre",
+  det: "determinante",
+  article: "artículo",
+  prep: "preposición",
+  conj: "conjunción",
+  contraction: "contracción",
+  num: "numeral",
+  particle: "partícula",
+  intj: "interjección",
+};
+
+/** Spanish label for a part of speech from the content DB ("noun" → "sustantivo"). */
+export function posLabel(pos: string): string {
+  return POS_LABELS[pos] ?? pos;
+}

@@ -325,7 +325,7 @@ fn gen_mixed(ctx: &mut GenCtx, kind: SessionKind, n: usize) -> (Vec<Round>, Vec<
 
         let kind_chosen = (rid as usize) % 4;
         if conj_used < max_conj
-            && (ctx.content.is_verb(w.word_id) || w.pos.as_deref() == Some("verb"))
+            && ctx.content.is_verb(w.word_id)
             && verbs.iter().any(|v| v.word_id == w.word_id)
             && kind_chosen == 3
         {
@@ -371,16 +371,18 @@ fn gen_mixed(ctx: &mut GenCtx, kind: SessionKind, n: usize) -> (Vec<Round>, Vec<
                 }
             }
             _ => {
-                if let Some((sid, es, en)) = usable.first() {
-                    ctx.used_sentences.insert(*sid);
-                    let (round, ty) = cloze_round(ctx, rid, &w, es, en.as_deref());
-                    rounds.push(round);
-                    types.push(ty);
-                } else {
-                    let (round, ty) = listen_round(ctx, rid, &w);
-                    rounds.push(round);
-                    types.push(ty);
-                }
+                let cloze = usable.iter().find_map(|(sid, es, en)| {
+                    cloze_round(ctx, rid, &w, es, en.as_deref()).map(|r| (*sid, r))
+                });
+                let (round, ty) = match cloze {
+                    Some((sid, round)) => {
+                        ctx.used_sentences.insert(sid);
+                        round
+                    }
+                    None => listen_round(ctx, rid, &w),
+                };
+                rounds.push(round);
+                types.push(ty);
             }
         }
         rid += 1;
@@ -513,27 +515,42 @@ fn listen_round(ctx: &mut GenCtx, id: i64, w: &WordCard) -> (Round, &'static str
     )
 }
 
+/// Blanks the word as it appears in the sentence ("comió", not "comer") and
+/// offers similar words in the same form as distractors.
 fn cloze_round(
     ctx: &mut GenCtx,
     id: i64,
     w: &WordCard,
     es: &str,
     en: Option<&str>,
-) -> (Round, &'static str) {
-    let target = w.lemma.clone();
-    let blanked = if let Some(pos) = es.find(&target) {
-        format!("{}___{}", &es[..pos], &es[pos + target.len()..])
-    } else {
-        es.replace(&target, "___")
-    };
-    let distractors = ctx.content.similar_words(w, 8);
+) -> Option<(Round, &'static str)> {
+    let forms = ctx.content.forms_of(w.word_id);
+    let (start, token, tag) = words_in(es).into_iter().find_map(|(start, token)| {
+        let lower = token.to_lowercase();
+        forms
+            .iter()
+            .find(|(f, _)| *f == lower)
+            .map(|(_, tag)| (start, token, tag.clone()))
+    })?;
+    let target = token.to_lowercase();
     let mut options = vec![target.clone()];
-    for d in distractors.iter().take(3) {
-        options.push(d.lemma.clone());
+    for d in ctx.content.similar_words(w, 12) {
+        if options.len() == 4 {
+            break;
+        }
+        if let Some(f) = ctx.content.form_with_tag(d.word_id, &tag) {
+            if !options.contains(&f) {
+                options.push(f);
+            }
+        }
     }
+    if options.len() < 3 {
+        return None;
+    }
+    let blanked = format!("{}___{}", &es[..start], &es[start + token.len()..]);
     let opts = shuffle(options);
     let answer_index = opts.iter().position(|o| *o == target).unwrap_or(0) as i32;
-    (
+    Some((
         Round::Cloze {
             id,
             word_id: w.word_id,
@@ -543,13 +560,28 @@ fn cloze_round(
             answer_index,
         },
         "cloze",
-    )
+    ))
+}
+
+/// (byte offset, word) for each run of letters in `s`.
+fn words_in(s: &str) -> Vec<(usize, &str)> {
+    let mut out = Vec::new();
+    let mut start = None;
+    for (i, c) in s.char_indices() {
+        if c.is_alphabetic() {
+            start.get_or_insert(i);
+        } else if let Some(st) = start.take() {
+            out.push((st, &s[st..i]));
+        }
+    }
+    if let Some(st) = start {
+        out.push((st, &s[st..]));
+    }
+    out
 }
 
 fn conjugation_round(ctx: &mut GenCtx, id: i64, w: &WordCard) -> Option<(Round, &'static str)> {
-    use tilde_core::conjugator::Conjugator;
-    use tilde_core::conjugator::PERSONS;
-    let rows = Conjugator::conjugate(&w.lemma)?;
+    let rows = ctx.content.conjugations(w.word_id);
     let tenses = ["presente", "pretérito", "imperfecto", "futuro", "subjuntivo presente"];
     let seed = (id as u64).wrapping_mul(2654435761) ^ 0x9E3779B9;
     let tense = tenses[(seed % tenses.len() as u64) as usize];
@@ -561,11 +593,6 @@ fn conjugation_round(ctx: &mut GenCtx, id: i64, w: &WordCard) -> Option<(Round, 
         return None;
     }
     let row = candidates[(seed / 7 % candidates.len() as u64) as usize];
-    let person = PERSONS
-        .iter()
-        .find(|p| **p == row.person)
-        .copied()
-        .unwrap_or("yo");
     let hint = row.form.chars().next().map(|c| {
         format!(
             "{}{}",
@@ -573,14 +600,13 @@ fn conjugation_round(ctx: &mut GenCtx, id: i64, w: &WordCard) -> Option<(Round, 
             "_".repeat(row.form.chars().count().saturating_sub(1))
         )
     })?;
-    let _ = ctx;
     Some((
         Round::Conjugation {
             id,
             word_id: w.word_id,
             verb: w.lemma.clone(),
             tense: tense.to_string(),
-            person: person.to_string(),
+            person: row.person.clone(),
             answer: row.form.clone(),
             hint,
         },
@@ -814,5 +840,105 @@ pub fn session_summary(
         level_up,
         new_badges: badges,
         best_combo: session.best_combo,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn content() -> ContentDb {
+        ContentDb::open(std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/resources/content.db"
+        )))
+    }
+
+    fn with_ctx<T>(f: impl FnOnce(&mut GenCtx) -> T) -> T {
+        let content = content();
+        let dir = std::env::temp_dir();
+        let user = crate::db::open(&dir.join(format!("tilde_session_test_{}.db", std::process::id())));
+        let tts = Tts::discover(&dir);
+        let (mut used, mut introduced) = (HashSet::new(), HashSet::new());
+        let mut ctx = GenCtx {
+            content: &content,
+            user: &user,
+            tts: &tts,
+            definition_lang: "en".into(),
+            frontier: 1,
+            used_sentences: &mut used,
+            introduced: &mut introduced,
+        };
+        f(&mut ctx)
+    }
+
+    fn word(content: &ContentDb, lemma: &str) -> WordCard {
+        let id = content.word_ids_by_lemma(lemma)[0];
+        content.word(id).unwrap()
+    }
+
+    #[test]
+    fn cloze_blanks_the_inflected_form_with_distractors_in_the_same_form() {
+        with_ctx(|ctx| {
+            let tener = word(ctx.content, "tener");
+            let (round, _) =
+                cloze_round(ctx, 0, &tener, "Yo tengo un perro muy grande.", None).unwrap();
+            let Round::Cloze { sentence_es, options, answer_index, .. } = round else {
+                panic!("not a cloze round")
+            };
+            assert_eq!(sentence_es, "Yo ___ un perro muy grande.");
+            assert_eq!(options[answer_index as usize], "tengo");
+            for o in &options {
+                let same_form: bool = ctx
+                    .content
+                    .conn
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM forms WHERE form = ?1 AND tag = 'presente|yo')",
+                        [o],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert!(same_form, "{o} is not a presente/yo form: {options:?}");
+            }
+            assert!(cloze_round(ctx, 0, &tener, "No hay nada aquí.", None).is_none());
+        });
+    }
+
+    #[test]
+    fn conjugation_rounds_come_from_the_wiktionary_table() {
+        with_ctx(|ctx| {
+            let decir = word(ctx.content, "decir");
+            let table = ctx.content.conjugations(decir.word_id);
+            for id in 0..20 {
+                let (round, _) = conjugation_round(ctx, id, &decir).unwrap();
+                let Round::Conjugation { tense, person, answer, .. } = round else { panic!() };
+                assert!(table.iter().any(|r| r.tense == tense && r.person == person && r.form == answer));
+            }
+            let row = |t: &str, p: &str| table.iter().find(|r| r.tense == t && r.person == p).map(|r| r.form.clone());
+            assert_eq!(row("subjuntivo presente", "nosotros").as_deref(), Some("digamos"));
+        });
+    }
+
+    #[test]
+    fn only_real_verbs_are_drilled_and_flagged_words_are_not_introduced() {
+        let content = content();
+        assert!(content.is_verb(word(&content, "tener").word_id));
+        for noun in ["mujer", "lugar", "ayer"] {
+            assert!(!content.is_verb(word(&content, noun).word_id), "{noun}");
+        }
+        let flagged: i64 = content
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM words WHERE register IS NOT NULL OR region IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(flagged > 0);
+        assert!(content
+            .new_candidates(1, 12_000)
+            .iter()
+            .chain(&content.verbs(2_000))
+            .all(|w| !["mierda", "joder", "computadora"].contains(&w.lemma.as_str())));
     }
 }

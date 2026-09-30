@@ -3,7 +3,7 @@
   import { confettiCenter } from "$lib/confetti";
   import { sfx } from "$lib/sfx";
   import type { ConjRow, WordDetail, WordHit } from "$lib/contract";
-  import { glossText } from "$lib/defs";
+  import { glossText, posLabel } from "$lib/defs";
 
   let query = $state("");
   let results = $state<WordHit[]>([]);
@@ -112,7 +112,7 @@
             <div class="min-w-0 flex-1">
               <h2 class="text-4xl font-black">{detail.word.lemma}</h2>
               <p class="mt-0.5 text-base text-white/50">
-                {#if detail.word.pos}{detail.word.pos} · {/if}rank #{detail.word.rank} · {detail.word.level}
+                {#if detail.word.pos}{posLabel(detail.word.pos)} · {/if}rank #{detail.word.rank} · {detail.word.level}
               </p>
             </div>
             <button

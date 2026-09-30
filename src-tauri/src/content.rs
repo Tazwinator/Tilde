@@ -2,7 +2,7 @@
 
 use rusqlite::Connection;
 use std::collections::HashMap;
-use tilde_core::types::WordCard;
+use tilde_core::types::{ConjRow, WordCard};
 
 pub struct ContentDb {
     pub conn: Connection,
@@ -66,13 +66,15 @@ impl ContentDb {
             .unwrap_or_default()
     }
 
-    /// Newest teachable words at or after `frontier` rank.
+    /// Newest teachable words at or after `frontier` rank. Vulgar words and
+    /// ones only used outside Spain are never introduced.
     pub fn new_candidates(&self, frontier: i64, limit: i64) -> Vec<WordCard> {
         let mut stmt = self
             .conn
             .prepare(
                 "SELECT id, lemma, pos, rank, gloss_en, gloss_es FROM words
                  WHERE rank >= ?1 AND gloss_en IS NOT NULL AND LENGTH(lemma) >= 2
+                   AND register IS NULL AND region IS NULL
                  ORDER BY rank LIMIT ?2",
             )
             .unwrap();
@@ -87,6 +89,7 @@ impl ContentDb {
             .prepare(
                 "SELECT id, lemma, pos, rank, gloss_en, gloss_es FROM words
                  WHERE rank >= ?1 AND gloss_en IS NOT NULL AND LENGTH(lemma) >= 2
+                   AND register IS NULL AND region IS NULL
                  ORDER BY rank LIMIT ?2",
             )
             .unwrap();
@@ -102,6 +105,7 @@ impl ContentDb {
                 "SELECT id, lemma, pos, rank, gloss_en, gloss_es FROM words
                  WHERE id != ?1 AND gloss_en IS NOT NULL AND lemma != ?2
                    AND (pos IS ?3 OR pos IS NULL) AND ABS(rank - ?4) < 4000
+                   AND register IS NULL AND gloss_en IS NOT (SELECT gloss_en FROM words WHERE id = ?1)
                  ORDER BY ABS(rank - ?4) LIMIT ?5",
             )
             .unwrap();
@@ -150,13 +154,14 @@ impl ContentDb {
         .unwrap_or_default()
     }
 
-    /// Top verbs (rank <= 3000) usable for conjugation rounds.
+    /// Most common verbs with a conjugation table, for conjugation rounds.
     pub fn verbs(&self, limit: i64) -> Vec<WordCard> {
         let mut stmt = self
             .conn
             .prepare(
                 "SELECT w.id, w.lemma, w.pos, w.rank, w.gloss_en, w.gloss_es FROM words w
-                 JOIN verbs v ON v.verb = w.lemma
+                 WHERE w.pos = 'verb' AND w.register IS NULL AND w.region IS NULL
+                   AND EXISTS (SELECT 1 FROM conjugations c WHERE c.word_id = w.id)
                  ORDER BY w.rank LIMIT ?1",
             )
             .unwrap();
@@ -168,7 +173,7 @@ impl ContentDb {
     /// Every known form (lemmas, plurals, conjugations) keyed accent-insensitively,
     /// for matching free text such as imported subtitles back to word ids.
     pub fn form_index(&self) -> HashMap<String, Vec<i64>> {
-        let mut stmt = self.conn.prepare("SELECT form, word_id FROM forms").unwrap();
+        let mut stmt = self.conn.prepare("SELECT DISTINCT form, word_id FROM forms").unwrap();
         let rows: Vec<(String, i64)> = stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
             .map(|rows| rows.filter_map(|r| r.ok()).collect())
@@ -182,15 +187,68 @@ impl ContentDb {
         map
     }
 
+    /// A verb (by its main part of speech) with a conjugation table. Nouns that
+    /// happen to end in -ar/-er/-ir ("mujer", "lugar") are not.
     pub fn is_verb(&self, word_id: i64) -> bool {
         self.conn
             .query_row(
-                "SELECT COUNT(*) FROM verbs WHERE verb = (SELECT lemma FROM words WHERE id = ?1)",
+                "SELECT EXISTS(SELECT 1 FROM words w WHERE w.id = ?1 AND w.pos = 'verb'
+                   AND EXISTS (SELECT 1 FROM conjugations c WHERE c.word_id = w.id))",
                 [word_id],
-                |r| r.get::<_, i64>(0),
+                |r| r.get::<_, bool>(0),
             )
-            .map(|c| c > 0)
             .unwrap_or(false)
+    }
+
+    /// Wiktionary's conjugation table: gerundio and participio first, then
+    /// each tense in person order.
+    pub fn conjugations(&self, word_id: i64) -> Vec<ConjRow> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT tense, person, form FROM conjugations WHERE word_id = ?1
+                 ORDER BY CASE tense
+                     WHEN 'gerundio' THEN 0 WHEN 'participio' THEN 1 WHEN 'presente' THEN 2
+                     WHEN 'pretérito' THEN 3 WHEN 'imperfecto' THEN 4 WHEN 'futuro' THEN 5
+                     WHEN 'condicional' THEN 6 WHEN 'subjuntivo presente' THEN 7
+                     WHEN 'subjuntivo imperfecto' THEN 8 WHEN 'imperativo' THEN 9 ELSE 10 END,
+                   CASE person
+                     WHEN '' THEN 0 WHEN 'yo' THEN 1 WHEN 'tú' THEN 2 WHEN 'él/ella/usted' THEN 3
+                     WHEN 'nosotros' THEN 4 WHEN 'vosotros' THEN 5 ELSE 6 END",
+            )
+            .unwrap();
+        stmt.query_map([word_id], |r| {
+            Ok(ConjRow { tense: r.get(0)?, person: r.get(1)?, form: r.get(2)? })
+        })
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+    }
+
+    /// (form, tag) for every written form of a word; see the pipeline's
+    /// `forms` table for the tag values.
+    pub fn forms_of(&self, word_id: i64) -> Vec<(String, String)> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT form, tag FROM forms WHERE word_id = ?1")
+            .unwrap();
+        stmt.query_map([word_id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default()
+    }
+
+    /// The word's form with a given tag ("pretérito|yo", "plural"); the lemma
+    /// itself for an empty tag.
+    pub fn form_with_tag(&self, word_id: i64, tag: &str) -> Option<String> {
+        if tag.is_empty() {
+            return self.word(word_id).map(|w| w.lemma);
+        }
+        self.conn
+            .query_row(
+                "SELECT form FROM forms WHERE word_id = ?1 AND tag = ?2 ORDER BY form LIMIT 1",
+                rusqlite::params![word_id, tag],
+                |r| r.get(0),
+            )
+            .ok()
     }
 }
 

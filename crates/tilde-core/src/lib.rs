@@ -1,6 +1,5 @@
 pub mod types;
 
-pub mod conjugator;
 pub mod srt;
 
 pub const APP_NAME: &str = "Tilde";

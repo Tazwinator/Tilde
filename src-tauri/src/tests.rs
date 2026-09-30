@@ -60,8 +60,11 @@ fn commands_that_read_settings_do_not_deadlock() {
 
         let hits = word_search(app.state(), "hablar".into(), 5);
         assert!(hits.iter().any(|h| h.lemma == "hablar"));
-        let detail = word_detail(app.state(), hits[0].word_id).expect("word detail");
-        assert_eq!(detail.word.word_id, hits[0].word_id);
+        let hablar = hits.iter().find(|h| h.lemma == "hablar").unwrap();
+        let detail = word_detail(app.state(), hablar.word_id).expect("word detail");
+        assert_eq!(detail.word.word_id, hablar.word_id);
+        let conj = detail.conjugations.expect("hablar has a conjugation table");
+        assert!(conj.iter().any(|r| r.tense == "pretérito" && r.person == "yo" && r.form == "hablé"));
     });
 }
 

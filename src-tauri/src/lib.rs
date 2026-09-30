@@ -20,7 +20,7 @@ use std::sync::Mutex;
 use tauri::Manager;
 use tilde_core::types::{
     Badge, Profile, Round, RoundFeedback, RoundResult, SessionKind, SessionStart, SessionSummary, Settings, WordHit,
-    TtsInfo, WordDetail, ExSentence, CardStateInfo, ConjRow, ImportReport, MinedSentence,
+    TtsInfo, WordDetail, ExSentence, CardStateInfo, ImportReport, MinedSentence,
     PlacementAnswer, PlacementItem, PlacementResult, StatsData, SeriesPoint,
 };
 
@@ -480,18 +480,9 @@ fn word_detail(state: tauri::State<AppState>, word_id: i64) -> Option<WordDetail
             },
         )
         .ok();
-    let conjugations = if tilde_core::conjugator::Conjugator::conjugate(&w.lemma).is_some() {
-        tilde_core::conjugator::Conjugator::conjugate(&w.lemma).map(|rows| {
-            rows.into_iter()
-                .map(|r| ConjRow {
-                    tense: r.tense,
-                    person: r.person,
-                    form: r.form,
-                })
-                .collect()
-        })
-    } else {
-        None
+    let conjugations = {
+        let rows = state.content.lock().unwrap().conjugations(word_id);
+        (!rows.is_empty()).then_some(rows)
     };
     let sentences = state
         .content
