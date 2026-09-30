@@ -504,6 +504,10 @@ fn main() {
     )
     .unwrap();
 
+    // Ship one self-contained file: a WAL-mode database needs -wal/-shm side
+    // files, which can't be created next to a read-only installed resource.
+    conn.execute_batch("PRAGMA journal_mode=DELETE; VACUUM;").unwrap();
+
     println!("done.");
 }
 

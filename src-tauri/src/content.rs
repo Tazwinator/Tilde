@@ -9,10 +9,13 @@ pub struct ContentDb {
 }
 
 impl ContentDb {
+    /// Opens the bundled DB as immutable: installed resources live in read-only
+    /// directories, where SQLite can't create the -shm file a WAL-mode database
+    /// (as built by older pipelines) needs even for reads.
     pub fn open(path: &std::path::Path) -> ContentDb {
         let conn = Connection::open_with_flags(
-            path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            immutable_uri(path),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
         )
         .unwrap_or_else(|e| panic!("open content db at {}: {e}", path.display()));
         ContentDb { conn }
@@ -191,6 +194,16 @@ impl ContentDb {
     }
 }
 
+fn immutable_uri(path: &std::path::Path) -> String {
+    let mut p = path.to_string_lossy().into_owned();
+    if cfg!(windows) {
+        p = p.replace('\\', "/");
+    }
+    // only these three are special in the path part of an SQLite URI
+    let p = p.replace('%', "%25").replace('?', "%3f").replace('#', "%23");
+    format!("file:{p}?immutable=1")
+}
+
 fn word_from_row(r: &rusqlite::Row) -> rusqlite::Result<WordCard> {
     let rank: i64 = r.get(3)?;
     Ok(WordCard {
@@ -202,4 +215,37 @@ fn word_from_row(r: &rusqlite::Row) -> rusqlite::Result<WordCard> {
         gloss_es: r.get(5)?,
         level: tilde_core::cefr_for_rank(rank).to_string(),
     })
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// A WAL-mode DB in a read-only directory (as when installed) must still be
+    /// readable. Only a non-root run exercises the permission part; the odd
+    /// directory name also covers URI escaping either way.
+    #[test]
+    fn opens_wal_db_in_read_only_dir() {
+        let dir = std::env::temp_dir().join(format!("tilde ro ?#%41 ñ {}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("content.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "PRAGMA journal_mode=WAL;
+                 CREATE TABLE words(id INTEGER PRIMARY KEY, lemma TEXT, pos TEXT, rank INTEGER,
+                                    gloss_en TEXT, gloss_es TEXT);
+                 INSERT INTO words VALUES (1, 'hablar', 'verb', 1, 'to speak', NULL);",
+            )
+            .unwrap();
+        }
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let lemma = std::panic::catch_unwind(|| ContentDb::open(&path).word(1).map(|w| w.lemma));
+
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(lemma.unwrap(), Some("hablar".to_string()));
+    }
 }
