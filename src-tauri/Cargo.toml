@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Tilde — a playful, zero-pressure Spanish trainer"
 authors = ["Tazwinator"]
 edition = "2021"
+license = "MIT"
 
 [lib]
 name = "tilde_lib"

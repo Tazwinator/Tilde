@@ -71,9 +71,9 @@ npm run tauri build
 
 ## License
 
-All original code in this repository is proprietary for now; it will be
-re-licensed MIT when the project goes public. Bundled third-party data
-keeps its own licenses (see attribution above).
+The code in this repository is released under the [MIT License](LICENSE).
+Third-party data used to build the content database keeps its own licenses
+(see attribution above).
 
 ## Multi-language future
 
