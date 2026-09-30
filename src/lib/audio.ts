@@ -2,7 +2,7 @@ import { api } from "./api";
 
 /**
  * Play round audio: prefer the provided base64 wav (data: URL),
- * otherwise fall back to TTS (backend under Tauri, speechSynthesis in browser).
+ * otherwise fall back to backend TTS.
  */
 export function playRoundAudio(base64: string | null, fallbackText?: string): void {
   if (base64) {

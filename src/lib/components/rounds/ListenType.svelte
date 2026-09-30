@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Round } from "$lib/contract";
-  import { norm } from "$lib/api";
+  import { norm } from "$lib/grading";
   import { playRoundAudio } from "$lib/audio";
   import { sfx } from "$lib/sfx";
 
