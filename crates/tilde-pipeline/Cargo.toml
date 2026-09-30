@@ -13,8 +13,7 @@ tilde-core = { path = "../tilde-core" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 rusqlite = { workspace = true }
-regex = { workspace = true }
-thiserror = { workspace = true }
 ureq = { version = "3", features = ["gzip"] }
 zip = { version = "6", default-features = false, features = ["deflate"] }
 flate2 = "1"
+sha2 = "0.10"

@@ -1,0 +1,3 @@
+# Words kept as their own entry although Wiktionary defines them as a form of
+# another word ("muy" is the apocopic form of "mucho", but means "very").
+muy

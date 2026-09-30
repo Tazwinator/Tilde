@@ -4095,11 +4095,10 @@ name = "tilde-pipeline"
 version = "0.1.0"
 dependencies = [
  "flate2",
- "regex",
  "rusqlite",
  "serde",
  "serde_json",
- "thiserror 2.0.20",
+ "sha2",
  "tilde-core",
  "ureq",
  "zip",

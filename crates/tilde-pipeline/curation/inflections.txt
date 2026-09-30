@@ -1,0 +1,55 @@
+# Written forms whose own dictionary sense is rare next to the verb form they
+# also are ("pienso" is "animal feed", but almost always means "I think").
+# Their frequency is credited to the verb (or noun/adjective) they inflect
+# instead of to the rare sense. One form per line.
+abierta
+abra
+acabo
+ama
+amo
+anda
+apuesto
+busca
+considerando
+contesta
+corta
+cuesta
+deja
+dejo
+detente
+elegido
+empiece
+escucha
+extraña
+gana
+grita
+habla
+limpia
+llama
+manda
+mata
+matado
+mate
+miro
+mira
+muera
+notas
+ocupada
+pagaré
+pare
+partes
+pasa
+pienso
+pongo
+queda
+quedo
+quita
+saca
+salvado
+tira
+toca
+toma
+tomo
+trata
+vendido
+volando
