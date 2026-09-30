@@ -1,0 +1,37 @@
+[package]
+name = "tilde"
+version = "0.1.0"
+description = "Tilde — a playful, zero-pressure Spanish trainer"
+authors = ["Tazwinator"]
+edition = "2021"
+
+[lib]
+name = "tilde_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tilde-core = { path = "../crates/tilde-core" }
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.37", features = ["bundled"] }
+fsrs = "6"
+thiserror = "2"
+base64 = "0.22"
+sha1 = "0.10"
+regex = "1"
+once_cell = "1"
+zip = { version = "6", default-features = false, features = ["deflate"] }
+chrono = "0.4"
+hex = "0.4.3"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
