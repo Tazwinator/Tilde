@@ -533,6 +533,12 @@ fn tts_info(state: tauri::State<AppState>) -> TtsInfo {
     }
 }
 
+/// Attribution for the bundled word data (its licenses require it in-app).
+#[tauri::command]
+fn content_credits(state: tauri::State<AppState>) -> String {
+    state.content.lock().unwrap().meta("sources").unwrap_or_default()
+}
+
 // --- sentence mining ---
 
 struct DbMatcher<'a> {
@@ -895,6 +901,7 @@ pub fn run() {
             word_reset,
             tts_speak,
             tts_info,
+            content_credits,
             srt_import,
             sentences_list,
             sentence_add_to_deck,

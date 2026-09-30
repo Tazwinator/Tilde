@@ -6,6 +6,7 @@
 
   let settings = $state<Settings | null>(null);
   let tts = $state<TtsInfo | null>(null);
+  let credits = $state("");
   let backupPath = $state<string | null>(null);
   let savedFlash = $state(false);
   let restoreFile = $state<File | null>(null);
@@ -19,6 +20,7 @@
     void (async () => {
       settings = await api.getSettings();
       tts = await api.ttsInfo();
+      credits = await api.contentCredits();
     })();
   });
 
@@ -168,6 +170,13 @@
         <p class="anim-pop mt-3 rounded-2xl bg-lime-500/10 p-3 font-mono text-base text-lime-500">{backupPath}</p>
       {/if}
     </section>
+
+    {#if credits}
+      <section class="card p-6">
+        <h2 class="text-2xl font-extrabold">📚 Créditos de los datos</h2>
+        <p class="mt-2 text-base text-white/60">{credits}</p>
+      </section>
+    {/if}
 
     <!-- Danger zone -->
     <section class="card border-coral-500/40 p-6">

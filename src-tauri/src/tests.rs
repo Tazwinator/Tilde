@@ -60,6 +60,8 @@ fn commands_that_read_settings_do_not_deadlock() {
 
         let hits = word_search(app.state(), "hablar".into(), 5);
         assert!(hits.iter().any(|h| h.lemma == "hablar"));
+        assert!(content_credits(app.state()).contains("Wiktionary"));
+
         let hablar = hits.iter().find(|h| h.lemma == "hablar").unwrap();
         let detail = word_detail(app.state(), hablar.word_id).expect("word detail");
         assert_eq!(detail.word.word_id, hablar.word_id);

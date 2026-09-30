@@ -83,6 +83,10 @@ export const api = {
     return invoke<TtsInfo>("tts_info");
   },
 
+  async contentCredits(): Promise<string> {
+    return invoke<string>("content_credits");
+  },
+
   async importSrt(title: string, text: string): Promise<ImportReport> {
     return invoke<ImportReport>("srt_import", { title, text });
   },

@@ -15,10 +15,13 @@ use std::path::{Path, PathBuf};
 
 const MAX_WORDS: usize = 12_000;
 
-const ATTRIBUTION: &str = "Word frequencies: hermitdave/FrequencyWords (OpenSubtitles 2018), \
-CC BY-SA 4.0. Lemmas, glosses, inflections and conjugations: Wiktionary (en.wiktionary.org) \
-via kaikki.org, CC BY-SA 4.0 and GFDL. Example sentences: Tatoeba (tatoeba.org) via OPUS, \
-CC BY 2.0 FR.";
+/// Shown in the app's settings; every source requires attribution.
+const ATTRIBUTION: &str = "Word frequencies: FrequencyWords by Hermit Dave \
+(github.com/hermitdave/FrequencyWords), from OpenSubtitles 2018, CC BY-SA 4.0. \
+Lemmas, glosses, inflections and conjugations: Wiktionary contributors (en.wiktionary.org) \
+via kaikki.org, CC BY-SA 4.0. Example sentences: Tatoeba contributors (tatoeba.org) via OPUS, \
+CC BY 2.0 FR. This word database is shared under CC BY-SA 4.0 \
+(creativecommons.org/licenses/by-sa/4.0).";
 
 struct Args {
     out: PathBuf,

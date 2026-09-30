@@ -21,6 +21,12 @@ impl ContentDb {
         ContentDb { conn }
     }
 
+    pub fn meta(&self, key: &str) -> Option<String> {
+        self.conn
+            .query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
+            .ok()
+    }
+
     pub fn word(&self, id: i64) -> Option<WordCard> {
         self.conn
             .query_row(
