@@ -5,6 +5,9 @@ pub mod deck;
 pub mod session;
 pub mod tts;
 
+#[cfg(test)]
+mod tests;
+
 use base64::Engine;
 use content::ContentDb;
 use rusqlite::Connection;
@@ -37,19 +40,21 @@ struct EventMeta {
     kind_label: String,
 }
 
-fn settings(state: &AppState) -> Settings {
-    let conn = state.user.lock().unwrap();
+// Helpers take the caller's `&Connection` rather than `&AppState`: commands
+// already hold the `state.user` lock, and `std::sync::Mutex` deadlocks if the
+// same thread locks it again.
+
+fn settings(conn: &Connection) -> Settings {
     Settings {
-        definition_lang: db::get_setting(&conn, "definition_lang").unwrap_or_else(|| "en".into()),
-        session_length: db::get_setting(&conn, "session_length").unwrap_or_else(|| "standard".into()),
-        sound_enabled: db::get_setting(&conn, "sound_enabled").map(|v| v == "1").unwrap_or(true),
+        definition_lang: db::get_setting(conn, "definition_lang").unwrap_or_else(|| "en".into()),
+        session_length: db::get_setting(conn, "session_length").unwrap_or_else(|| "standard".into()),
+        sound_enabled: db::get_setting(conn, "sound_enabled").map(|v| v == "1").unwrap_or(true),
         target_lang: "es".into(),
     }
 }
 
-fn frontier(state: &AppState) -> i64 {
-    let conn = state.user.lock().unwrap();
-    db::get_setting(&conn, "frontier_rank")
+fn frontier(conn: &Connection) -> i64 {
+    db::get_setting(conn, "frontier_rank")
         .and_then(|v| v.parse().ok())
         .unwrap_or(1)
 }
@@ -103,7 +108,7 @@ fn profile_get(state: tauri::State<AppState>) -> Profile {
     let badges_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM badges", [], |r| r.get(0))
         .unwrap_or(0);
-    let s = settings(&state);
+    let s = settings(&conn);
     Profile {
         xp,
         level,
@@ -126,8 +131,8 @@ fn profile_get(state: tauri::State<AppState>) -> Profile {
 
 #[tauri::command]
 fn session_start(state: tauri::State<AppState>, kind: SessionKind) -> SessionStart {
-    let s = settings(&state);
     let conn = state.user.lock().unwrap();
+    let s = settings(&conn);
     let content = state.content.lock().unwrap();
     let generated = session::generate(
         kind,
@@ -135,7 +140,7 @@ fn session_start(state: tauri::State<AppState>, kind: SessionKind) -> SessionSta
         &conn,
         &state.tts,
         &s.definition_lang,
-        frontier(&state),
+        frontier(&conn),
     );
     drop(conn);
     let id = state.next_session.fetch_add(1, Ordering::SeqCst);
@@ -433,28 +438,23 @@ fn placement_submit(
 
 // --- words ---
 
-fn hit(state: &AppState, w: &tilde_core::types::WordCard) -> WordHit {
-    let known = {
-        let conn = state.user.lock().unwrap();
-        conn.query_row(
+fn hit(conn: &Connection, w: &tilde_core::types::WordCard) -> WordHit {
+    let known = conn
+        .query_row(
             "SELECT state FROM cards WHERE word_id = ?1",
             [w.word_id],
             |r| r.get::<_, i64>(0),
         )
         .map(|s| s >= 2)
-        .unwrap_or(false)
-    };
+        .unwrap_or(false);
     session::to_hit(w, known)
 }
 
 #[tauri::command]
 fn word_search(state: tauri::State<AppState>, query: String, limit: i64) -> Vec<WordHit> {
-    let content = state.content.lock().unwrap();
-    content
-        .search(&query, limit)
-        .iter()
-        .map(|w| hit(&state, w))
-        .collect()
+    let words = state.content.lock().unwrap().search(&query, limit);
+    let conn = state.user.lock().unwrap();
+    words.iter().map(|w| hit(&conn, w)).collect()
 }
 
 #[tauri::command]
@@ -507,7 +507,7 @@ fn word_detail(state: tauri::State<AppState>, word_id: i64) -> Option<WordDetail
         })
         .collect();
     Some(WordDetail {
-        word: hit(&state, &w),
+        word: hit(&conn, &w),
         audio_available: state.tts.available(),
         card,
         conjugations,
@@ -623,12 +623,13 @@ fn srt_import(state: tauri::State<AppState>, title: String, text: String) -> Imp
 
     let mut top: Vec<(i64, i64)> = word_freq.into_iter().collect();
     top.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
-    let top_words: Vec<WordHit> = {
+    let top_cards: Vec<tilde_core::types::WordCard> = {
         let content = state.content.lock().unwrap();
-        top.iter()
-            .take(10)
-            .filter_map(|(wid, _)| content.word(*wid).map(|w| hit(&state, &w)))
-            .collect()
+        top.iter().take(10).filter_map(|(wid, _)| content.word(*wid)).collect()
+    };
+    let top_words: Vec<WordHit> = {
+        let conn = state.user.lock().unwrap();
+        top_cards.iter().map(|w| hit(&conn, w)).collect()
     };
 
     ImportReport {
@@ -790,7 +791,7 @@ fn stats_get(state: tauri::State<AppState>) -> StatsData {
 
 #[tauri::command]
 fn settings_get(state: tauri::State<AppState>) -> Settings {
-    settings(&state)
+    settings(&state.user.lock().unwrap())
 }
 
 #[tauri::command]
