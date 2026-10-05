@@ -126,6 +126,23 @@
       <p class="mt-3 text-xl font-bold text-white/60">Preparando la mesa…</p>
     </div>
   </div>
+{:else if phase === "playing" && session && session.rounds.length === 0}
+  <div class="card mx-auto flex max-w-xl flex-col items-center gap-4 p-10 text-center">
+    <p class="text-5xl" aria-hidden="true">🌿</p>
+    <h1 class="text-3xl font-extrabold">Nada que repasar ahora mismo</h1>
+    <p class="text-lg text-white/60">Tus palabras están frescas. ¿Una sesión normal con alguna nueva?</p>
+    <div class="mt-2 flex w-full gap-3">
+      <button
+        class="pressable flex-1 rounded-2xl bg-gradient-to-r from-grape-500 to-fuchsia-500 py-3 text-lg font-extrabold hover:brightness-110"
+        onclick={() => void goto("/play?kind=standard")}
+      >
+        🎯 Sesión normal
+      </button>
+      <button class="pressable flex-1 rounded-2xl bg-white/10 py-3 text-lg font-extrabold hover:bg-white/20" onclick={() => void goto("/")}>
+        🏠 Inicio
+      </button>
+    </div>
+  </div>
 {:else if phase === "playing" && session}
   <div class="relative mx-auto max-w-3xl">
     <!-- Top bar -->

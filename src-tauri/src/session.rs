@@ -163,17 +163,18 @@ fn gen_reviews(ctx: &mut GenCtx, n: usize) -> (Vec<Round>, Vec<&'static str>) {
 fn gen_sidecar(ctx: &mut GenCtx, n: usize) -> (Vec<Round>, Vec<&'static str>) {
     let due = deck::due_card_ids(ctx.user, n as i64);
     let learning = deck::learning_card_ids(ctx.user, (n * 2) as i64);
-    let new: Vec<WordCard> = ctx
+    let new = ctx
         .content
-        .new_candidates(ctx.frontier, n as i64)
-        .into_iter()
-        .take(n / 2)
-        .collect();
+        .new_candidates(ctx.frontier, n / 2, &deck::card_ids(ctx.user));
 
+    // due cards are also learning cards; each word once
+    let mut seen = HashSet::new();
     let mut words: Vec<WordCard> = Vec::new();
     for wid in due.iter().chain(learning.iter()) {
-        if let Some(w) = ctx.content.word(*wid) {
-            words.push(w);
+        if seen.insert(*wid) {
+            if let Some(w) = ctx.content.word(*wid) {
+                words.push(w);
+            }
         }
     }
     words.extend(new);
@@ -251,14 +252,8 @@ fn gen_mixed(ctx: &mut GenCtx, kind: SessionKind, n: usize) -> (Vec<Round>, Vec<
     // gather pools
     let due = deck::due_card_ids(ctx.user, n_review as i64);
     let learning = deck::learning_card_ids(ctx.user, (n * 2) as i64);
-    let knownish: HashSet<i64> = learning.iter().copied().collect();
-    let new_words: Vec<WordCard> = ctx
-        .content
-        .new_candidates(ctx.frontier, n_new as i64)
-        .into_iter()
-        .filter(|w| !knownish.contains(&w.word_id))
-        .take(n_new)
-        .collect();
+    let carded = deck::card_ids(ctx.user);
+    let new_words = ctx.content.new_candidates(ctx.frontier, n_new, &carded);
 
     let mut rounds: Vec<Round> = Vec::new();
     let mut types: Vec<&'static str> = Vec::new();
@@ -268,10 +263,10 @@ fn gen_mixed(ctx: &mut GenCtx, kind: SessionKind, n: usize) -> (Vec<Round>, Vec<
     let mut intro_ids: HashSet<i64> = HashSet::new();
     let mut game_words: Vec<WordCard> = Vec::new();
 
-    // new word blocks: intro + 2 games
+    // new word blocks: intro + 2 games. The card is created when the intro
+    // is answered, so an abandoned session leaves no half-seen words behind.
     for w in &new_words {
         if intro_ids.insert(w.word_id) {
-            deck::introduce(ctx.user, w.word_id);
             let sentences = ctx.content.sentences_for_word(w.word_id, 1);
             rounds.push(Round::NewWord {
                 id: rid,
@@ -303,7 +298,7 @@ fn gen_mixed(ctx: &mut GenCtx, kind: SessionKind, n: usize) -> (Vec<Round>, Vec<
             .content
             .words_by_rank(ctx.frontier, (n_games as i64) * 2)
             .into_iter()
-            .filter(|w| !knownish.contains(&w.word_id) && !game_words.iter().any(|g| g.word_id == w.word_id))
+            .filter(|w| !carded.contains(&w.word_id) && !game_words.iter().any(|g| g.word_id == w.word_id))
             .take(n_games - learn_words.len())
             .collect();
         learn_words.extend(extra);
@@ -936,7 +931,7 @@ mod tests {
             .unwrap();
         assert!(flagged > 0);
         assert!(content
-            .new_candidates(1, 12_000)
+            .new_candidates(1, 12_000, &HashSet::new())
             .iter()
             .chain(&content.verbs(2_000))
             .all(|w| !["mierda", "joder", "computadora"].contains(&w.lemma.as_str())));

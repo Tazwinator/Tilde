@@ -177,6 +177,14 @@ pub fn learning_card_ids(conn: &Connection, limit: i64) -> Vec<i64> {
         .unwrap_or_default()
 }
 
+/// Every word the player has a card for, whatever its state.
+pub fn card_ids(conn: &Connection) -> std::collections::HashSet<i64> {
+    let mut stmt = conn.prepare("SELECT word_id FROM cards").unwrap();
+    stmt.query_map([], |r| r.get(0))
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+}
+
 pub fn counts(conn: &Connection) -> (i64, i64, i64) {
     let now_ts = now();
     let due: i64 = conn

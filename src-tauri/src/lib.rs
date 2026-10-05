@@ -227,8 +227,9 @@ fn round_submit(
         deck::grade(&user, wid, grade);
     }
 
-    // track new words
+    // a new word joins the deck once its intro has actually been seen
     if let Round::NewWord { word, .. } = &round {
+        deck::introduce(&user, word.word_id);
         session.new_words.push(word.lemma.clone());
     }
 

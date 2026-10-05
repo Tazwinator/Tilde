@@ -420,3 +420,56 @@ fn a_match_round_grades_each_pair_on_its_own() {
         }
     });
 }
+
+fn new_word_ids(start: &SessionStart) -> Vec<i64> {
+    start
+        .rounds
+        .iter()
+        .filter_map(|r| match r {
+            Round::NewWord { word, .. } => Some(word.word_id),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn starting_a_session_creates_no_cards_until_rounds_are_answered() {
+    with_app(|app| {
+        let start = session_start(app.state(), SessionKind::Standard);
+        assert!(!new_word_ids(&start).is_empty());
+        assert_eq!(count(app, "cards"), 0, "an unplayed session left cards behind");
+        answer(app, &start, 0, true);
+        assert!(count(app, "cards") >= 1);
+    });
+}
+
+#[test]
+fn new_words_keep_coming_past_every_word_already_in_the_deck() {
+    with_app(|app| {
+        // the 300 most frequent teachable words are already known
+        let first = {
+            let state = app.state::<AppState>();
+            let content = state.content.lock().unwrap();
+            content.new_candidates(1, 300, &HashSet::new())
+        };
+        for w in &first {
+            word_mark_known(app.state(), w.word_id);
+        }
+        let known: HashSet<i64> = first.iter().map(|w| w.word_id).collect();
+
+        let mut seen = HashSet::new();
+        for _ in 0..3 {
+            let start = session_start(app.state(), SessionKind::Standard);
+            let ids = new_word_ids(&start);
+            assert!(ids.len() >= 2, "ran out of new words");
+            for id in ids {
+                assert!(!known.contains(&id), "reintroduced a known word");
+                assert!(seen.insert(id), "same new word in two sessions");
+            }
+            for i in 0..start.rounds.len() {
+                answer(app, &start, i, true);
+            }
+            session_finish(app.state(), start.session_id);
+        }
+    });
+}

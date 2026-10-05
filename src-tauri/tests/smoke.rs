@@ -16,15 +16,18 @@ fn content_db() -> ContentDb {
     ContentDb::open(&p)
 }
 
-fn user_db() -> rusqlite::Connection {
-    db::open(&std::env::temp_dir().join(format!("tilde_test_{}.db", std::process::id()))).unwrap()
+/// A fresh user DB per test: tests run in parallel and must not share progress.
+fn user_db(test: &str) -> rusqlite::Connection {
+    let path = std::env::temp_dir().join(format!("tilde_test_{}_{test}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    db::open(&path).unwrap()
 }
 
 #[test]
 fn content_db_has_data() {
     let c = content_db();
     assert!(c.search("hablar", 10).iter().any(|w| w.lemma == "hablar"));
-    let words = c.new_candidates(1, 20);
+    let words = c.new_candidates(1, 20, &Default::default());
     assert!(!words.is_empty());
     assert!(c.verbs(50).len() >= 10);
 }
@@ -32,8 +35,10 @@ fn content_db_has_data() {
 #[test]
 fn generates_every_session_kind() {
     let content = content_db();
-    let user = user_db();
+    let user = user_db("kinds");
     let tts = Tts::discover(&std::env::temp_dir()); // 'none' engine in CI
+    // something due, so ReviewOnly has a card to show
+    deck::introduce(&user, content.new_candidates(1, 1, &Default::default())[0].word_id);
     for kind in [
         tilde_core::types::SessionKind::Quick,
         tilde_core::types::SessionKind::Standard,
@@ -50,7 +55,7 @@ fn generates_every_session_kind() {
 #[test]
 fn full_session_lifecycle() {
     let content = content_db();
-    let user = user_db();
+    let user = user_db("lifecycle");
     let tts = Tts::discover(&std::env::temp_dir());
 
     // placement

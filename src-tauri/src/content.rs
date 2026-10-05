@@ -1,7 +1,7 @@
 //! Read-only access to the bundled content database.
 
 use rusqlite::Connection;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tilde_core::types::{ConjRow, WordCard};
 
 pub struct ContentDb {
@@ -74,18 +74,28 @@ impl ContentDb {
 
     /// Newest teachable words at or after `frontier` rank. Vulgar words and
     /// ones only used outside Spain are never introduced.
-    pub fn new_candidates(&self, frontier: i64, limit: i64) -> Vec<WordCard> {
+    /// The next `limit` teachable words from `frontier` up, in frequency order,
+    /// skipping `skip` (every word the player already has a card for). The
+    /// frontier itself only moves at placement, so this is what keeps new
+    /// words coming session after session.
+    pub fn new_candidates(&self, frontier: i64, limit: usize, skip: &HashSet<i64>) -> Vec<WordCard> {
         let mut stmt = self
             .conn
             .prepare(
                 "SELECT id, lemma, pos, rank, gloss_en, gloss_es FROM words
                  WHERE rank >= ?1 AND gloss_en IS NOT NULL AND LENGTH(lemma) >= 2
                    AND register IS NULL AND region IS NULL
-                 ORDER BY rank LIMIT ?2",
+                 ORDER BY rank",
             )
             .unwrap();
-        stmt.query_map(rusqlite::params![frontier, limit * 4], word_from_row)
-            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        // rows are stepped lazily, so this reads only as far as it needs to
+        stmt.query_map([frontier], word_from_row)
+            .map(|rows| {
+                rows.filter_map(|r| r.ok())
+                    .filter(|w| !skip.contains(&w.word_id))
+                    .take(limit)
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
