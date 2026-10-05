@@ -175,6 +175,10 @@ pub struct RoundResult {
     /// For ReviewCard rounds: FSRS grade 1=Again 2=Hard 3=Good 4=Easy.
     #[serde(default)]
     pub quality: Option<i32>,
+    /// For Match rounds: the pairs the player got wrong at least once. The
+    /// rest are graded as known.
+    #[serde(default)]
+    pub missed_word_ids: Vec<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -217,6 +217,7 @@ fn answer(app: &tauri::App<MockRuntime>, start: &SessionStart, index: usize, cor
         correct,
         duration_ms: 1000,
         quality: None,
+        missed_word_ids: vec![],
     };
     round_submit(app.state(), start.session_id, match_round_id(&start.rounds[index]), result)
 }
@@ -365,5 +366,57 @@ fn backups_go_to_the_chosen_folder_and_it_survives_a_restore() {
         assert_eq!(std::path::PathBuf::from(backup_folder(app.state()).dir), synced);
 
         assert!(backup_folder_set(app.state(), None).unwrap().is_default);
+    });
+}
+
+#[test]
+fn a_stale_session_or_a_repeat_submit_grades_nothing() {
+    with_app(|app| {
+        let start = session_start(app.state(), SessionKind::Standard);
+        let ghost = SessionStart { session_id: 9_999, ..start.clone() };
+        let feedback = answer(app, &ghost, 0, true);
+        assert_eq!(feedback.xp_gained, 0);
+
+        let i = start.rounds.iter().position(|r| !matches!(r, Round::NewWord { .. })).unwrap();
+        assert!(answer(app, &start, i, true).xp_gained > 0);
+        assert_eq!(answer(app, &start, i, true).xp_gained, 0, "second submit was graded");
+        assert_eq!(count(app, "round_log"), 1);
+        assert_eq!(count(app, "reviews"), 1);
+        // the sessions mutex wasn't poisoned by a panic
+        session_finish(app.state(), start.session_id);
+    });
+}
+
+#[test]
+fn a_match_round_grades_each_pair_on_its_own() {
+    with_app(|app| {
+        let start = session_start(app.state(), SessionKind::Standard);
+        let (index, pairs) = start
+            .rounds
+            .iter()
+            .enumerate()
+            .find_map(|(i, r)| match r {
+                Round::Match { pairs, .. } => Some((i, pairs.clone())),
+                _ => None,
+            })
+            .expect("a standard session has a match round");
+        let missed = pairs[0].word_id;
+        let result = RoundResult {
+            round_index: index,
+            correct: false,
+            duration_ms: 5000,
+            quality: None,
+            missed_word_ids: vec![missed],
+        };
+        round_submit(app.state(), start.session_id, match_round_id(&start.rounds[index]), result);
+
+        let state = app.state::<AppState>();
+        let conn = state.user.lock().unwrap();
+        for p in &pairs {
+            let lapses: i64 = conn
+                .query_row("SELECT lapses FROM cards WHERE word_id = ?1", [p.word_id], |r| r.get(0))
+                .unwrap();
+            assert_eq!(lapses, i64::from(p.word_id == missed), "{}", p.es);
+        }
     });
 }

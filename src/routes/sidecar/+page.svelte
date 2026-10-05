@@ -47,6 +47,7 @@
 
   async function answer(i: number) {
     if (!round || chosen !== null || submitting) return;
+    submitting = true;
     chosen = i;
     const r = round;
     const correct = r.type === "choice" || r.type === "listen" ? i === r.answerIndex : false;
@@ -58,22 +59,30 @@
   async function answerTyped(e: Event) {
     e.preventDefault();
     if (!round || round.type !== "listen_type" || submitting) return;
+    submitting = true;
     const ok = grade(typed, round.answer) !== "wrong";
     if (ok) sfx.correct(0);
     else sfx.wrong();
     await submit(ok);
   }
 
+  // `submitting` stays true until the next round is showing: a second Enter
+  // during the 650 ms pause used to grade the round again and skip the next.
   async function submit(correct: boolean) {
     if (!session || !round) return;
     submitting = true;
-    const feedback = await api.submitRound(session.sessionId, round.id, {
-      roundIndex: idx,
-      correct,
-      durationMs: Math.round(performance.now() - roundStart),
-    });
-    xp += feedback.xpGained;
-    submitting = false;
+    try {
+      const feedback = await api.submitRound(session.sessionId, round.id, {
+        roundIndex: idx,
+        correct,
+        durationMs: Math.round(performance.now() - roundStart),
+      });
+      xp += feedback.xpGained;
+    } catch {
+      submitting = false;
+      chosen = null;
+      return;
+    }
     setTimeout(async () => {
       chosen = null;
       typed = "";
@@ -83,6 +92,7 @@
       } else {
         idx += 1;
         roundStart = performance.now();
+        submitting = false;
         playCurrent();
       }
     }, 650);

@@ -45,16 +45,26 @@
   const round = $derived(session?.rounds[idx] ?? null);
   const progress = $derived(session ? idx / session.rounds.length : 0);
 
-  async function handleAnswered(correct: boolean, correctText?: string | null, quality?: number) {
+  // `submitting` stays true from an answer until the next round is on screen
+  // (or for good once the last one is in), so a double click or a late
+  // callback can't grade a round twice or finish the session twice.
+  async function handleAnswered(correct: boolean, correctText?: string | null, quality?: number, missedWordIds?: number[]) {
     if (!session || submitting || !round) return;
     submitting = true;
     const durationMs = Math.round(performance.now() - roundStart);
-    const feedback: RoundFeedback = await api.submitRound(session.sessionId, round.id, {
-      roundIndex: idx,
-      correct,
-      durationMs,
-      quality: quality ?? null,
-    });
+    let feedback: RoundFeedback;
+    try {
+      feedback = await api.submitRound(session.sessionId, round.id, {
+        roundIndex: idx,
+        correct,
+        durationMs,
+        quality: quality ?? null,
+        missedWordIds: missedWordIds ?? [],
+      });
+    } catch {
+      submitting = false;
+      return;
+    }
     xp += feedback.xpGained;
     combo = feedback.combo;
 
@@ -71,12 +81,12 @@
       : { correct: false, text: correctText ? `Casi — era «${correctText}»` : "Casi — ¡sigue así!" };
     setTimeout(() => (flash = null), correct ? 900 : 1400);
 
-    submitting = false;
     if (idx + 1 >= session.rounds.length) {
       await finish();
     } else {
       idx += 1;
       roundStart = performance.now();
+      submitting = false;
     }
   }
 
@@ -282,6 +292,7 @@
           idx = 0;
           xp = 0;
           combo = 0;
+          submitting = false;
           session = await api.startSession(kind);
           roundStart = performance.now();
           phase = "playing";

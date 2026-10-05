@@ -157,6 +157,7 @@ fn session_start(state: tauri::State<AppState>, kind: SessionKind) -> SessionSta
         correct: 0,
         total_graded: 0,
         event_id: None,
+        answered: HashSet::new(),
     };
     state.sessions.lock().unwrap().insert(id, session);
     SessionStart {
@@ -173,29 +174,28 @@ fn round_submit(
     round_id: i64,
     result: RoundResult,
 ) -> RoundFeedback {
-    let mut sessions = state.sessions.lock().unwrap();
-    let session = sessions.get_mut(&session_id).expect("session not found");
-    let round = session
-        .rounds
-        .get(result.round_index.min(session.rounds.len().saturating_sub(1)))
-        .cloned()
-        .or_else(|| {
-            session.rounds.iter().find(|r| match_round_id(r) == round_id).cloned()
-        });
-    let Some(round) = round else {
-        return RoundFeedback {
-            correct_answer: None,
-            xp_gained: 0,
-            combo: session.combo,
-            level_up: None,
-            new_badges: Vec::new(),
-        };
+    let neutral = |combo| RoundFeedback {
+        correct_answer: None,
+        xp_gained: 0,
+        combo,
+        level_up: None,
+        new_badges: Vec::new(),
     };
-    let round_type = session
-        .round_types
-        .get(result.round_index)
-        .copied()
-        .unwrap_or("choice");
+    let mut sessions = state.sessions.lock().unwrap();
+    // Gone after a restore or reset, or already finished: nothing to grade.
+    let Some(session) = sessions.get_mut(&session_id) else {
+        return neutral(0);
+    };
+    let index = match session.rounds.get(result.round_index) {
+        Some(r) if match_round_id(r) == round_id => Some(result.round_index),
+        _ => session.rounds.iter().position(|r| match_round_id(r) == round_id),
+    };
+    // A double Enter or a late click must not grade the same round twice.
+    let Some(index) = index.filter(|i| session.answered.insert(*i)) else {
+        return neutral(session.combo);
+    };
+    let round = session.rounds[index].clone();
+    let round_type = session.round_types.get(index).copied().unwrap_or("choice");
     let correct = result.correct;
     let quality = result.quality;
 
@@ -232,12 +232,11 @@ fn round_submit(
         session.new_words.push(word.lemma.clone());
     }
 
-    // match rounds: word-level grading for each pair happens client-side
-    if round_type == "match" {
-        if let Round::Match { pairs, .. } = &round {
-            for p in pairs {
-                deck::grade(&user, p.word_id, if correct { 3 } else { 1 });
-            }
+    // match rounds: each pair on its own, so one slip doesn't fail all four
+    if let Round::Match { pairs, .. } = &round {
+        for p in pairs {
+            let missed = result.missed_word_ids.contains(&p.word_id);
+            deck::grade(&user, p.word_id, if missed { 1 } else { 3 });
         }
     }
 
@@ -260,7 +259,6 @@ fn round_submit(
     if session::award_badge(&user, "first-session") {
         outcome.new_badges.push(session::find_badge("first-session"));
     }
-    let _ = round_id;
     RoundFeedback {
         correct_answer: session::correct_answer_of(&round),
         xp_gained: outcome.xp_gained,

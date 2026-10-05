@@ -37,6 +37,8 @@ pub struct Session {
     pub total_graded: i64,
     /// This session's row in `events`, created on the first answer.
     pub event_id: Option<i64>,
+    /// Round indices already graded; a repeat submit is ignored.
+    pub answered: HashSet<usize>,
 }
 
 pub fn round_count(kind: SessionKind) -> usize {

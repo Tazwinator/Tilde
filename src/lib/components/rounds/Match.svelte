@@ -9,7 +9,7 @@
     onAnswered,
   }: {
     round: RoundT;
-    onAnswered: (correct: boolean, correctText?: string | null) => void;
+    onAnswered: (correct: boolean, correctText?: string | null, quality?: number, missedWordIds?: number[]) => void;
   } = $props();
 
   interface Tile {
@@ -33,6 +33,8 @@
   let matched = $state<number[]>([]);
   let wrongShake = $state<number | null>(null);
   let wrongAttempts = $state(0);
+  // Spanish words the player tried to pair wrongly; only these are graded as missed.
+  let missed = new Set<number>();
   let done = $state(false);
 
   function clickEs(t: Tile) {
@@ -49,10 +51,11 @@
       sfx.correct(matched.length);
       if (matched.length === round.pairs.length) {
         done = true;
-        setTimeout(() => onAnswered(wrongAttempts <= 1, null), 600);
+        setTimeout(() => onAnswered(wrongAttempts <= 1, null, undefined, [...missed]), 600);
       }
     } else {
       wrongAttempts += 1;
+      missed.add(selectedEs);
       wrongShake = t.wordId;
       sfx.wrong();
       setTimeout(() => (wrongShake = null), 450);

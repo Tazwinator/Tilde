@@ -67,6 +67,7 @@ export interface RoundResult {
   correct: boolean;
   durationMs: number;
   quality?: number | null; // FSRS grade 1..4 for review_card rounds
+  missedWordIds?: number[]; // match rounds: pairs the player got wrong at least once
 }
 
 export interface RoundFeedback {
