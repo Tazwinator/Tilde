@@ -211,18 +211,60 @@ fn zip_with(meta: &str, db: &[u8]) -> Vec<u8> {
     zip.finish().unwrap().into_inner()
 }
 
-/// Plays the first round of a fresh session and finishes it.
-fn play_one_round(app: &tauri::App<MockRuntime>) {
-    let start = session_start(app.state(), SessionKind::Standard);
-    let first = &start.rounds[0];
+fn answer(app: &tauri::App<MockRuntime>, start: &SessionStart, index: usize, correct: bool) -> RoundFeedback {
     let result = RoundResult {
-        round_index: 0,
-        correct: true,
+        round_index: index,
+        correct,
         duration_ms: 1000,
         quality: None,
     };
-    round_submit(app.state(), start.session_id, match_round_id(first), result);
+    round_submit(app.state(), start.session_id, match_round_id(&start.rounds[index]), result)
+}
+
+/// Plays the first round of a fresh session and finishes it.
+fn play_one_round(app: &tauri::App<MockRuntime>) {
+    let start = session_start(app.state(), SessionKind::Standard);
+    answer(app, &start, 0, true);
     session_finish(app.state(), start.session_id);
+}
+
+#[test]
+fn xp_is_saved_as_it_is_earned_not_only_when_the_session_ends() {
+    with_app(|app| {
+        let start = session_start(app.state(), SessionKind::Standard);
+        let earned: i64 = (0..start.rounds.len())
+            .map(|i| i64::from(answer(app, &start, i, true).xp_gained))
+            .sum();
+        assert!(earned > 0);
+        // walked away without finishing: the XP and the session still count
+        let profile = profile_get(app.state());
+        assert_eq!((profile.xp, profile.sessions_total), (earned, 1));
+
+        let summary = session_finish(app.state(), start.session_id);
+        assert_eq!(summary.xp, earned);
+        let profile = profile_get(app.state());
+        assert_eq!((profile.xp, profile.sessions_total), (earned, 1), "finishing counted it twice");
+    });
+}
+
+#[test]
+fn a_level_up_is_reported_when_lifetime_xp_crosses_a_level() {
+    with_app(|app| {
+        {
+            let state = app.state::<AppState>();
+            let conn = state.user.lock().unwrap();
+            conn.execute("INSERT INTO events(ts, kind, xp) VALUES (0, 'session', 495)", [])
+                .unwrap();
+        }
+        let start = session_start(app.state(), SessionKind::Standard);
+        let level_ups: Vec<i32> = (0..start.rounds.len())
+            .filter_map(|i| answer(app, &start, i, true).level_up)
+            .map(|l| l.level)
+            .collect();
+        assert_eq!(level_ups, vec![1]);
+        let summary = session_finish(app.state(), start.session_id);
+        assert_eq!(summary.level_up.map(|l| l.level), Some(1));
+    });
 }
 
 #[test]

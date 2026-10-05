@@ -156,6 +156,7 @@ fn session_start(state: tauri::State<AppState>, kind: SessionKind) -> SessionSta
         started_at: deck::now(),
         correct: 0,
         total_graded: 0,
+        event_id: None,
     };
     state.sessions.lock().unwrap().insert(id, session);
     SessionStart {
@@ -240,6 +241,7 @@ fn round_submit(
         }
     }
 
+    let xp_before = total_xp(&user);
     let mut outcome = session::score_round(
         &user,
         round_type,
@@ -249,6 +251,7 @@ fn round_submit(
         &mut session.best_combo,
         &mut session.xp,
     );
+    save_session_event(&user, session);
     user.execute(
         "INSERT INTO round_log(ts, session_id, round_type, correct) VALUES (?1, ?2, ?3, ?4)",
         rusqlite::params![deck::now() as i64, session_id, round_type, i64::from(correct)],
@@ -262,8 +265,43 @@ fn round_submit(
         correct_answer: session::correct_answer_of(&round),
         xp_gained: outcome.xp_gained,
         combo: outcome.combo,
-        level_up: outcome.level_up,
+        level_up: session::level_up(xp_before, total_xp(&user)),
         new_badges: std::mem::take(&mut outcome.new_badges),
+    }
+}
+
+/// Writes the session's running totals to its `events` row, creating the row
+/// on the first answer, so XP and minutes count even if the session is never
+/// finished (the app closed, or the player just walked away).
+fn save_session_event(conn: &Connection, session: &mut Session) {
+    let kind_label = match session.kind {
+        SessionKind::Sidecar => "sidecar",
+        _ => "session",
+    };
+    let meta = serde_json::to_string(&EventMeta {
+        words_known: deck::counts(conn).2,
+        kind_label: kind_label.to_string(),
+    })
+    .unwrap_or_default();
+    let now = deck::now();
+    let duration_s = (now - session.started_at).max(0.0) as i64;
+    match session.event_id {
+        Some(id) => {
+            conn.execute(
+                "UPDATE events SET ts = ?1, xp = ?2, duration_s = ?3, meta = ?4 WHERE id = ?5",
+                rusqlite::params![now as i64, session.xp, duration_s, meta, id],
+            )
+            .ok();
+        }
+        None => {
+            let inserted = conn.execute(
+                "INSERT INTO events(ts, kind, xp, duration_s, meta) VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![now as i64, kind_label, session.xp, duration_s, meta],
+            );
+            if inserted.is_ok() {
+                session.event_id = Some(conn.last_insert_rowid());
+            }
+        }
     }
 }
 
@@ -284,7 +322,7 @@ fn match_round_id(r: &Round) -> i64 {
 #[tauri::command]
 fn session_finish(state: tauri::State<AppState>, session_id: i64) -> SessionSummary {
     let mut sessions = state.sessions.lock().unwrap();
-    let Some(session) = sessions.remove(&session_id) else {
+    let Some(mut session) = sessions.remove(&session_id) else {
         return SessionSummary {
             xp: 0,
             rounds: 0,
@@ -298,28 +336,10 @@ fn session_finish(state: tauri::State<AppState>, session_id: i64) -> SessionSumm
         };
     };
     let user = state.user.lock().unwrap();
-    let minutes = ((deck::now() - session.started_at) / 60.0).max(0.0);
-    let kind_label = match session.kind {
-        SessionKind::Sidecar => "sidecar".to_string(),
-        _ => "session".to_string(),
-    };
+    if session.event_id.is_some() {
+        save_session_event(&user, &mut session);
+    }
     let words_known = deck::counts(&user).2;
-    let meta = serde_json::to_string(&EventMeta {
-        words_known,
-        kind_label: kind_label.clone(),
-    })
-    .unwrap_or_default();
-    user.execute(
-        "INSERT INTO events(ts, kind, xp, duration_s, meta) VALUES (?1, ?2, ?3, ?4, ?5)",
-        rusqlite::params![
-            deck::now() as i64,
-            kind_label,
-            session.xp,
-            (minutes * 60.0) as i64,
-            meta
-        ],
-    )
-    .ok();
 
     // badge checks
     let mut badges = Vec::new();
@@ -392,15 +412,9 @@ fn session_finish(state: tauri::State<AppState>, session_id: i64) -> SessionSumm
     if sidecar_minutes >= 60 && session::award_badge(&user, "sidecar-hour") {
         badges.push(session::find_badge("sidecar-hour"));
     }
-    // level up
-    let final_level = session::level_info(total_xp(&user));
-    let level_up = if final_level.level
-        == session::level_info(total_xp(&user) - session.xp).level + 1
-    {
-        Some(final_level)
-    } else {
-        None
-    };
+    // the session's XP is already in the total; compare with where it started
+    let total = total_xp(&user);
+    let level_up = session::level_up(total - session.xp, total);
     let summary = session::session_summary(&user, &session, level_up, badges);
     if session.total_graded > 0 {
         if let Err(e) = backup::write(&user, &backup::folder(&state.app_dir), backup::Kind::Auto) {

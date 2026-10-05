@@ -35,6 +35,8 @@ pub struct Session {
     pub started_at: f64,
     pub correct: i64,
     pub total_graded: i64,
+    /// This session's row in `events`, created on the first answer.
+    pub event_id: Option<i64>,
 }
 
 pub fn round_count(kind: SessionKind) -> usize {
@@ -723,8 +725,13 @@ pub fn correct_answer_of(round: &Round) -> Option<String> {
 pub struct ScoreOutcome {
     pub xp_gained: i32,
     pub combo: i32,
-    pub level_up: Option<LevelInfo>,
     pub new_badges: Vec<Badge>,
+}
+
+/// The level reached, if going from `before` to `after` lifetime XP crossed one.
+pub fn level_up(before: i64, after: i64) -> Option<LevelInfo> {
+    let reached = level_info(after);
+    (reached.level > level_info(before).level).then_some(reached)
 }
 
 pub fn score_round(
@@ -734,9 +741,8 @@ pub fn score_round(
     quality: Option<i32>,
     combo: &mut i32,
     best_combo: &mut i32,
-    xp_total: &mut i64,
+    session_xp: &mut i64,
 ) -> ScoreOutcome {
-    let before_level = level_info(*xp_total).level;
     let mut earned_badges = Vec::new();
 
     if correct {
@@ -767,7 +773,7 @@ pub fn score_round(
         1
     };
 
-    *xp_total += xp as i64;
+    *session_xp += xp as i64;
 
     // combo badges
     if *combo >= 10 && award_badge(user, "combo-10") {
@@ -777,17 +783,9 @@ pub fn score_round(
         earned_badges.push(find_badge("combo-25"));
     }
 
-    let after = level_info(*xp_total);
-    let level_up = if after.level > before_level {
-        Some(after.clone())
-    } else {
-        None
-    };
-
     ScoreOutcome {
         xp_gained: xp,
         combo: *combo,
-        level_up,
         new_badges: earned_badges,
     }
 }
