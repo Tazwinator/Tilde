@@ -265,7 +265,7 @@
           <p class="text-sm text-white/50">mejor combo</p>
         </div>
         <div class="rounded-2xl bg-white/5 p-4">
-          <p class="text-3xl font-black text-tubo-500">⏱ {summary.minutes}</p>
+          <p class="text-3xl font-black text-tubo-500">⏱ {summary.minutes < 1 ? "<1" : Math.round(summary.minutes)}</p>
           <p class="text-sm text-white/50">minutos</p>
         </div>
       </div>

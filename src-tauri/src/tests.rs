@@ -473,3 +473,48 @@ fn new_words_keep_coming_past_every_word_already_in_the_deck() {
         }
     });
 }
+
+#[test]
+fn stats_use_real_durations_and_run_oldest_to_newest() {
+    with_app(|app| {
+        {
+            let state = app.state::<AppState>();
+            let conn = state.user.lock().unwrap();
+            let now = deck::now() as i64;
+            conn.execute_batch(&format!(
+                "INSERT INTO events(ts, kind, xp, duration_s) VALUES ({}, 'session', 50, 600);
+                 INSERT INTO events(ts, kind, xp, duration_s) VALUES ({}, 'session', 100, 1200);
+                 INSERT INTO round_log(ts, session_id, round_type, correct) VALUES
+                   ({now}, 1, 'new_word', 1), ({now}, 1, 'new_word', 1), ({now}, 1, 'new_word', 1),
+                   ({now}, 1, 'choice', 1), ({now}, 1, 'choice', 0);",
+                now - 86_400,
+                now - 15 * 86_400,
+            ))
+            .unwrap();
+        }
+        let stats = stats_get(app.state());
+        let labels: Vec<&str> = stats.minutes_per_week.iter().map(|p| p.label.as_str()).collect();
+        assert_eq!(labels, ["-7w", "-6w", "-5w", "-4w", "-3w", "-2w", "-1w", "now"]);
+        let minutes: Vec<f64> = stats.minutes_per_week.iter().map(|p| p.value).collect();
+        assert_eq!(minutes, [0.0, 0.0, 0.0, 0.0, 0.0, 20.0, 0.0, 10.0]);
+        assert_eq!(stats.xp_per_week.last().map(|p| p.value), Some(50.0));
+        // intros aren't answers: they count in neither accuracy nor the game mix
+        assert!((stats.accuracy_all_time - 0.5).abs() < 1e-6, "{}", stats.accuracy_all_time);
+        assert!(stats.game_mix.iter().all(|g| g.label != "new_word"));
+    });
+}
+
+#[test]
+fn every_logged_round_type_has_a_stats_label() {
+    let page = include_str!("../../src/routes/stats/+page.svelte");
+    let start = page.find("const GAME_LABELS").expect("GAME_LABELS in stats page");
+    let body = &page[start..start + page[start..].find("};").unwrap()];
+    let labelled: HashSet<String> = body
+        .lines()
+        .filter_map(|l| l.trim().split_once(':'))
+        .map(|(k, _)| k.trim().to_string())
+        .collect();
+    for tag in ts_round_keys().into_keys().filter(|t| t != "new_word") {
+        assert!(labelled.contains(&tag), "no stats label for round type {tag}");
+    }
+}

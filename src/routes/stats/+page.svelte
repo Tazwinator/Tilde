@@ -8,13 +8,16 @@
     void api.stats().then((s) => (stats = s));
   });
 
+  // keyed by the round types the backend logs (session.rs)
   const GAME_LABELS: Record<string, string> = {
     choice: "Elección",
     listen: "Escucha",
+    listen_type: "Dictado",
     match: "Parejas",
     build: "Construir",
     cloze: "Huecos",
-    review: "Repasos",
+    conjugation: "Conjugación",
+    review_card: "Repasos",
   };
 
   function linePath(points: SeriesPoint[], w: number, h: number, pad = 8): string {
@@ -34,6 +37,11 @@
     if (points.length < 2) return "";
     const line = linePath(points, w, h, pad);
     return `${line} L${(w - pad).toFixed(1)},${h - pad} L${pad},${h - pad} Z`;
+  }
+
+  // Line-chart points sit at the very edges, so their labels hang inward.
+  function anchor(i: number, n: number): "start" | "middle" | "end" {
+    return i === 0 ? "start" : i === n - 1 ? "end" : "middle";
   }
 
   function barHeight(v: number, points: SeriesPoint[], maxH: number): number {
@@ -85,7 +93,7 @@
             {@const x = 8 + (i * (320 - 16)) / (stats.xpPerWeek.length - 1)}
             {@const y = 132 - 8 - (p.value / Math.max(...stats.xpPerWeek.map((q) => q.value), 1)) * 116}
             <circle cx={x} cy={y} r="3.5" fill="#a78bfa" />
-            <text x={x} y="140" text-anchor="middle" font-size="10" fill="rgba(255,255,255,0.45)">{p.label}</text>
+            <text x={x} y="140" text-anchor={anchor(i, stats.xpPerWeek.length)} font-size="10" fill="rgba(255,255,255,0.45)">{p.label}</text>
           {/each}
         </svg>
       </div>
@@ -100,7 +108,7 @@
             {@const x = 8 + (i * (320 - 16)) / (stats.cumulativeWords.length - 1)}
             {@const y = 132 - 8 - (p.value / Math.max(...stats.cumulativeWords.map((q) => q.value), 1)) * 116}
             <circle cx={x} cy={y} r="3.5" fill="#34d399" />
-            <text x={x} y="140" text-anchor="middle" font-size="10" fill="rgba(255,255,255,0.45)">{p.label}</text>
+            <text x={x} y="140" text-anchor={anchor(i, stats.cumulativeWords.length)} font-size="10" fill="rgba(255,255,255,0.45)">{p.label}</text>
           {/each}
         </svg>
       </div>

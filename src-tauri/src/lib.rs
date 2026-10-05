@@ -691,7 +691,7 @@ fn stats_get(state: tauri::State<AppState>) -> StatsData {
         let mut stmt = conn
             .prepare("SELECT ts, duration_s, xp FROM events WHERE kind IN ('session','sidecar')")
             .unwrap();
-        stmt.query_map([], |r| Ok((r.get(0)?, r.get::<_, i64>(0)? as f64, r.get(2)?)))
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as f64, r.get(2)?)))
             .map(|rows| rows.filter_map(|r| r.ok()).collect())
             .unwrap_or_default()
     };
@@ -704,26 +704,21 @@ fn stats_get(state: tauri::State<AppState>) -> StatsData {
         e.0 += dur / 60.0;
         e.1 += xp;
     }
+    // oldest week first, so the charts read left to right up to "now"
     let mut minutes_per_week = Vec::new();
     let mut xp_per_week = Vec::new();
     for w in (0..8).rev() {
         let (mins, xp) = buckets.get(&w).copied().unwrap_or((0.0, 0));
-        let label = if w == 0 {
-            "now".to_string()
-        } else {
-            format!("-{}w", w)
-        };
+        let label = if w == 0 { "now".to_string() } else { format!("-{w}w") };
         minutes_per_week.push(SeriesPoint {
-            label,
+            label: label.clone(),
             value: mins.round(),
         });
         xp_per_week.push(SeriesPoint {
-            label: if w == 0 { "now".into() } else { format!("-{}w", w) },
+            label,
             value: xp as f64,
         });
     }
-    minutes_per_week.reverse();
-    xp_per_week.reverse();
 
     let mut cumulative: Vec<(i64, i64)> = {
         let mut stmt = conn
@@ -745,13 +740,16 @@ fn stats_get(state: tauri::State<AppState>) -> StatsData {
         })
         .unwrap_or_default()
     };
-    cumulative.dedup_by(|a, b| a.0 / 86400 == b.0 / 86400);
+    // one point per day: the last count of the day, not the first
+    cumulative.reverse();
+    cumulative.dedup_by(|later, kept| later.0 / 86400 == kept.0 / 86400);
+    cumulative.reverse();
     let cumulative_words: Vec<SeriesPoint> = cumulative
         .iter()
         .map(|(ts, w)| {
             SeriesPoint {
                 label: chrono::DateTime::from_timestamp(*ts, 0)
-                    .map(|d| d.format("%m/%d").to_string())
+                    .map(|d| d.format("%d/%m").to_string())
                     .unwrap_or_default(),
                 value: *w as f64,
             }
@@ -760,14 +758,17 @@ fn stats_get(state: tauri::State<AppState>) -> StatsData {
 
     let accuracy_all_time: f32 = conn
         .query_row(
-            "SELECT AVG(correct) FROM round_log",
+            "SELECT COALESCE(AVG(correct), 0.0) FROM round_log WHERE round_type != 'new_word'",
             [],
             |r| r.get(0),
         )
         .unwrap_or(0.0);
     let mut game_mix: Vec<(String, i64)> = {
         let mut stmt = conn
-            .prepare("SELECT round_type, COUNT(*) FROM round_log GROUP BY round_type ORDER BY COUNT(*) DESC")
+            .prepare(
+                "SELECT round_type, COUNT(*) FROM round_log WHERE round_type != 'new_word'
+                 GROUP BY round_type ORDER BY COUNT(*) DESC",
+            )
             .unwrap();
         stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
             .map(|rows| rows.filter_map(|r| r.ok()).collect())
