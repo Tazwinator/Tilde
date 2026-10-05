@@ -19,7 +19,7 @@ fn mock_app() -> tauri::App<MockRuntime> {
         env!("CARGO_MANIFEST_DIR"),
         "/resources/content.db"
     )));
-    let user = db::open(&app_dir.join("tilde_user.db"));
+    let user = db::open(&app_dir.join("tilde_user.db")).unwrap();
     let tts = tts::Tts::discover(&app_dir);
     mock_builder()
         .manage(AppState {

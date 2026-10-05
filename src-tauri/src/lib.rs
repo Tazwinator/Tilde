@@ -826,7 +826,7 @@ fn backup_import(state: tauri::State<AppState>, bytes: Vec<u8>) -> Result<(), St
     let mut guard = state.user.lock().unwrap();
     let old = std::mem::replace(&mut *guard, Connection::open_in_memory().unwrap());
     drop(old);
-    *guard = db::open(&state.app_dir.join("tilde_user.db"));
+    *guard = db::open(&state.app_dir.join("tilde_user.db"))?;
     Ok(())
 }
 
@@ -875,7 +875,7 @@ pub fn run() {
                 .unwrap_or_else(|_| PathBuf::from("."));
             let _ = std::fs::create_dir_all(&app_dir);
             let content = ContentDb::open(&resolve_content_db(app.handle()));
-            let user = db::open(&app_dir.join("tilde_user.db"));
+            let user = db::open(&app_dir.join("tilde_user.db"))?;
             let tts = tts::Tts::discover(&app_dir);
             app.manage(AppState {
                 content: Mutex::new(content),

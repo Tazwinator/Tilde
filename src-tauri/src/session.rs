@@ -857,7 +857,7 @@ mod tests {
     fn with_ctx<T>(f: impl FnOnce(&mut GenCtx) -> T) -> T {
         let content = content();
         let dir = std::env::temp_dir();
-        let user = crate::db::open(&dir.join(format!("tilde_session_test_{}.db", std::process::id())));
+        let user = crate::db::open(&dir.join(format!("tilde_session_test_{}.db", std::process::id()))).unwrap();
         let tts = Tts::discover(&dir);
         let (mut used, mut introduced) = (HashSet::new(), HashSet::new());
         let mut ctx = GenCtx {

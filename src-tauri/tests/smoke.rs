@@ -17,7 +17,7 @@ fn content_db() -> ContentDb {
 }
 
 fn user_db() -> rusqlite::Connection {
-    db::open(&std::env::temp_dir().join(format!("tilde_test_{}.db", std::process::id())))
+    db::open(&std::env::temp_dir().join(format!("tilde_test_{}.db", std::process::id()))).unwrap()
 }
 
 #[test]
