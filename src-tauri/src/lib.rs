@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Mutex;
 use tauri::Manager;
 use tilde_core::types::{
-    Badge, Profile, Round, RoundFeedback, RoundResult, SessionKind, SessionStart, SessionSummary, Settings, WordHit,
+    BackupFolder, Badge, Profile, Round, RoundFeedback, RoundResult, SessionKind, SessionStart, SessionSummary, Settings, WordHit,
     TtsInfo, WordDetail, ExSentence, CardStateInfo, ImportReport, MinedSentence,
     PlacementAnswer, PlacementItem, PlacementResult, StatsData, SeriesPoint,
 };
@@ -401,7 +401,13 @@ fn session_finish(state: tauri::State<AppState>, session_id: i64) -> SessionSumm
     } else {
         None
     };
-    session::session_summary(&user, &session, level_up, badges)
+    let summary = session::session_summary(&user, &session, level_up, badges);
+    if session.total_graded > 0 {
+        if let Err(e) = backup::write(&user, &backup::folder(&state.app_dir), backup::Kind::Auto) {
+            eprintln!("automatic backup failed: {e}");
+        }
+    }
+    summary
 }
 
 // --- placement ---
@@ -814,31 +820,74 @@ fn badges_list(state: tauri::State<AppState>) -> Vec<Badge> {
         .collect()
 }
 
+fn user_db_path(app_dir: &std::path::Path) -> PathBuf {
+    app_dir.join("tilde_user.db")
+}
+
+#[tauri::command]
+fn backup_folder(state: tauri::State<AppState>) -> BackupFolder {
+    backup::describe(&state.app_dir)
+}
+
+/// `dir: None` goes back to the default folder inside the app's data dir.
+#[tauri::command]
+fn backup_folder_set(state: tauri::State<AppState>, dir: Option<String>) -> Result<BackupFolder, String> {
+    let dir = backup::set_folder(&state.app_dir, dir.as_deref())?;
+    // Start the new folder off with today's progress rather than waiting for
+    // the next session, so a freshly synced folder is useful straight away.
+    let conn = state.user.lock().unwrap();
+    if let Err(e) = backup::write(&conn, &dir, backup::Kind::Auto) {
+        eprintln!("snapshot into the new backup folder failed: {e}");
+    }
+    Ok(backup::describe(&state.app_dir))
+}
+
 #[tauri::command]
 fn backup_export(state: tauri::State<AppState>) -> Result<String, String> {
     let conn = state.user.lock().unwrap();
-    backup::export(&conn, &state.app_dir).map(|p| p.to_string_lossy().into_owned())
+    backup::write(&conn, &backup::folder(&state.app_dir), backup::Kind::Manual)
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
+fn restore_from(state: &AppState, bytes: &[u8]) -> Result<(), String> {
+    // Rounds in flight belong to the progress being replaced.
+    state.sessions.lock().unwrap().clear();
+    let mut conn = state.user.lock().unwrap();
+    backup::restore(
+        &mut conn,
+        &user_db_path(&state.app_dir),
+        bytes,
+        &backup::folder(&state.app_dir),
+    )?;
+    Ok(())
 }
 
 #[tauri::command]
 fn backup_import(state: tauri::State<AppState>, bytes: Vec<u8>) -> Result<(), String> {
-    backup::import(&state.app_dir, &bytes)?;
-    let mut guard = state.user.lock().unwrap();
-    let old = std::mem::replace(&mut *guard, Connection::open_in_memory().unwrap());
-    drop(old);
-    *guard = db::open(&state.app_dir.join("tilde_user.db"))?;
-    Ok(())
+    restore_from(&state, &bytes)
+}
+
+/// Restores one of the backups listed by `backup_folder`.
+#[tauri::command]
+fn backup_restore(state: tauri::State<AppState>, path: String) -> Result<(), String> {
+    let bytes = std::fs::read(&path).map_err(|e| format!("No se pudo leer la copia: {e}"))?;
+    restore_from(&state, &bytes)
 }
 
 #[tauri::command]
 fn progress_reset(state: tauri::State<AppState>) -> Result<(), String> {
-    let conn = state.user.lock().unwrap();
-    for table in ["cards", "reviews", "round_log", "events", "badges", "mined", "mined_words", "settings"] {
-        conn.execute(&format!("DELETE FROM {table}"), [])
+    state.sessions.lock().unwrap().clear();
+    let mut conn = state.user.lock().unwrap();
+    backup::write(&conn, &backup::folder(&state.app_dir), backup::Kind::BeforeReset)
+        .map_err(|e| format!("No se pudo guardar una copia antes de reiniciar: {e}"))?;
+    // One transaction, children before parents (mined_words references mined),
+    // so a failure leaves everything as it was rather than half-deleted.
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    for table in ["mined_words", "mined", "cards", "reviews", "round_log", "events", "badges", "settings"] {
+        tx.execute(&format!("DELETE FROM {table}"), [])
             .map_err(|e| e.to_string())?;
     }
-    state.sessions.lock().unwrap().clear();
-    Ok(())
+    tx.commit().map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -868,6 +917,7 @@ fn resolve_content_db(app: &tauri::AppHandle) -> PathBuf {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let app_dir = app
                 .path()
@@ -875,7 +925,7 @@ pub fn run() {
                 .unwrap_or_else(|_| PathBuf::from("."));
             let _ = std::fs::create_dir_all(&app_dir);
             let content = ContentDb::open(&resolve_content_db(app.handle()));
-            let user = db::open(&app_dir.join("tilde_user.db"))?;
+            let user = db::open(&user_db_path(&app_dir))?;
             let tts = tts::Tts::discover(&app_dir);
             app.manage(AppState {
                 content: Mutex::new(content),
@@ -909,8 +959,11 @@ pub fn run() {
             settings_get,
             settings_set,
             badges_list,
+            backup_folder,
+            backup_folder_set,
             backup_export,
             backup_import,
+            backup_restore,
             progress_reset,
         ])
         .run(tauri::generate_context!())

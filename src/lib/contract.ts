@@ -195,3 +195,19 @@ export interface TtsInfo {
   engine: string;
   voice: string;
 }
+
+export type BackupKind = "manual" | "auto" | "before-reset" | "before-restore";
+
+export interface BackupInfo {
+  path: string;
+  name: string;
+  kind: BackupKind;
+  createdAt: number; // unix seconds
+  sizeBytes: number;
+}
+
+export interface BackupFolder {
+  dir: string;
+  isDefault: boolean;
+  backups: BackupInfo[]; // newest first
+}

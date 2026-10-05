@@ -17,6 +17,7 @@ tauri-build = { version = "2", features = [] }
 tilde-core = { path = "../crates/tilde-core" }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.37", features = ["bundled"] }

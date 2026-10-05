@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  BackupFolder,
   Badge,
   ImportReport,
   MinedSentence,
@@ -115,12 +116,26 @@ export const api = {
     return invoke<Badge[]>("badges_list");
   },
 
+  async backupFolder(): Promise<BackupFolder> {
+    return invoke<BackupFolder>("backup_folder");
+  },
+
+  /** `null` goes back to the default folder. */
+  async setBackupFolder(dir: string | null): Promise<BackupFolder> {
+    return invoke<BackupFolder>("backup_folder_set", { dir });
+  },
+
   async exportBackup(): Promise<string> {
     return invoke<string>("backup_export");
   },
 
   async importBackup(bytes: Uint8Array): Promise<void> {
     return invoke<void>("backup_import", { bytes: Array.from(bytes) });
+  },
+
+  /** Restores a backup listed by backupFolder(). */
+  async restoreBackup(path: string): Promise<void> {
+    return invoke<void>("backup_restore", { path });
   },
 
   async resetProgress(): Promise<void> {

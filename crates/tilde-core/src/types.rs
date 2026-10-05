@@ -349,3 +349,28 @@ pub struct TtsInfo {
     pub engine: String,
     pub voice: String,
 }
+
+// ---------------------------------------------------------------------------
+// Backups
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupInfo {
+    pub path: String,
+    pub name: String,
+    /// "manual" | "auto" | "before-reset" | "before-restore"
+    pub kind: String,
+    /// Unix seconds.
+    pub created_at: i64,
+    pub size_bytes: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupFolder {
+    pub dir: String,
+    pub is_default: bool,
+    /// Newest first.
+    pub backups: Vec<BackupInfo>,
+}
