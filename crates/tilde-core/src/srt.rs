@@ -162,28 +162,21 @@ pub fn parse_subtitles(text: &str) -> Vec<SubtitleLine> {
     lines
 }
 
-/// Plain text: one line per sentence, untimed.
+/// Plain text: one untimed line per line of text; `lines_to_sentences`
+/// splits and joins them into sentences like any subtitle.
 fn parse_prose(raw_lines: &[&str]) -> Vec<SubtitleLine> {
-    let mut lines = Vec::new();
-    for raw in raw_lines {
-        let raw = raw.trim();
-        let mut last = 0;
-        let mut pieces: Vec<&str> = Vec::new();
-        for m in sentence_end_re().find_iter(raw) {
-            pieces.push(&raw[last..m.end()]);
-            last = m.end();
-        }
-        pieces.push(&raw[last..]);
-        for piece in pieces.into_iter().map(str::trim).filter(|p| !p.is_empty()) {
-            lines.push(SubtitleLine {
-                index: lines.len() as i64 + 1,
-                start_ms: 0,
-                end_ms: 0,
-                text: piece.to_string(),
-            });
-        }
-    }
-    lines
+    raw_lines
+        .iter()
+        .map(|raw| raw.trim())
+        .filter(|raw| !raw.is_empty())
+        .enumerate()
+        .map(|(i, text)| SubtitleLine {
+            index: i as i64 + 1,
+            start_ms: 0,
+            end_ms: 0,
+            text: text.to_string(),
+        })
+        .collect()
 }
 
 fn is_noise(line: &str) -> bool {
@@ -196,7 +189,8 @@ fn is_noise(line: &str) -> bool {
     letters > 0 && upper * 2 > letters
 }
 
-/// Merge subtitle lines into natural sentences.
+/// Merge subtitle lines into natural sentences, and split lines that hold
+/// more than one.
 pub fn lines_to_sentences(lines: &[SubtitleLine]) -> Vec<SubtitleSentence> {
     let mut out = Vec::new();
     let mut buf = String::new();
@@ -210,46 +204,87 @@ pub fn lines_to_sentences(lines: &[SubtitleLine]) -> Vec<SubtitleSentence> {
         }
         // a new speaker's turn starts a new sentence
         if starts_with_dash(text) && !buf.is_empty() {
-            if let Some(s) = clean_sentence(&buf) {
-                out.push(SubtitleSentence { text: s, start_ms: start, end_ms: end });
+            emit(&mut out, &mut buf, start, end);
+        }
+        let pieces = split_sentences(text);
+        let last = pieces.len().saturating_sub(1);
+        for (i, piece) in pieces.into_iter().enumerate() {
+            if buf.is_empty() {
+                start = line.start_ms;
+            } else {
+                buf.push(' ');
             }
-            buf.clear();
-        }
-        if buf.is_empty() {
-            start = line.start_ms;
-            buf.push_str(text);
-        } else {
-            buf.push(' ');
-            buf.push_str(text);
-        }
-        end = line.end_ms;
+            buf.push_str(piece);
+            end = line.end_ms;
 
-        let dur = end - start;
-        let done = (buf.ends_with('.') || buf.ends_with('!') || buf.ends_with('?') || buf.ends_with('…'))
-            || buf.len() >= 220
-            || dur >= 12_000;
-        if done {
-            let s = clean_sentence(&buf);
-            if let Some(s) = s {
-                out.push(SubtitleSentence {
-                    text: s,
-                    start_ms: start,
-                    end_ms: end,
-                });
+            // A short sentence inside a line ("Hola. ¿Qué tal?", "Vale. Te
+            // lo prometo.") stays with the next one: alone it's too short to
+            // keep, and together they read as one exchange.
+            let ended = buf.trim_end_matches(CLOSING_QUOTES).ends_with(['.', '!', '?', '…']);
+            let done = (ended && (i == last || word_count(&buf) >= MIN_WORDS))
+                || buf.len() >= 220
+                || end - start >= 12_000;
+            if done {
+                emit(&mut out, &mut buf, start, end);
             }
-            buf.clear();
         }
     }
     if !buf.is_empty() {
-        if let Some(s) = clean_sentence(&buf) {
-            out.push(SubtitleSentence {
-                text: s,
-                start_ms: start,
-                end_ms: end,
-            });
-        }
+        emit(&mut out, &mut buf, start, end);
     }
     out
+}
+
+const MIN_WORDS: usize = 3;
+const CLOSING_QUOTES: [char; 4] = ['»', '”', '"', '\''];
+
+/// Titles and abbreviations whose full stop doesn't end a sentence.
+const ABBREVIATIONS: &[&str] = &[
+    "sr", "sra", "srta", "sres", "dr", "dra", "dña", "ud", "uds", "vd", "vds", "prof", "lic",
+];
+
+fn word_count(s: &str) -> usize {
+    s.split_whitespace().count()
+}
+
+fn emit(out: &mut Vec<SubtitleSentence>, buf: &mut String, start_ms: i64, end_ms: i64) {
+    if let Some(text) = clean_sentence(buf) {
+        out.push(SubtitleSentence { text, start_ms, end_ms });
+    }
+    buf.clear();
+}
+
+/// Splits `text` where one sentence ends and another starts inside it: after
+/// . ! ? or … when the next word opens a sentence (a capital, ¿ or ¡).
+/// "Pues... no sé", "el Sr. García" and "J. R. R. Tolkien" stay whole.
+fn split_sentences(text: &str) -> Vec<&str> {
+    let mut pieces = Vec::new();
+    let mut from = 0;
+    for m in sentence_end_re().find_iter(text) {
+        let next = text[m.end()..]
+            .trim_start_matches(['«', '“', '"', '-', '–', '—', ' '])
+            .chars()
+            .next();
+        if !next.is_some_and(|c| c.is_uppercase() || c == '¿' || c == '¡') {
+            continue;
+        }
+        if m.as_str().trim_end().trim_end_matches(CLOSING_QUOTES) == "." {
+            let before = text[..m.start()]
+                .rsplit(char::is_whitespace)
+                .next()
+                .unwrap_or("")
+                .trim_start_matches(|c: char| !c.is_alphanumeric());
+            let initial = before.chars().count() == 1 && before.starts_with(char::is_uppercase);
+            if initial || ABBREVIATIONS.contains(&before.to_lowercase().as_str()) {
+                continue;
+            }
+        }
+        pieces.push(text[from..m.end()].trim());
+        from = m.end();
+    }
+    pieces.push(text[from..].trim());
+    pieces.retain(|p| !p.is_empty());
+    pieces
 }
 
 fn clean_sentence(text: &str) -> Option<String> {
@@ -390,6 +425,34 @@ mod tests {
     fn two_speakers_in_one_cue_are_two_sentences() {
         let srt = "1\n00:00:01,000 --> 00:00:03,000\n- ¿Vienes a la fiesta?\n- Sí, ahora mismo voy.\n";
         assert_eq!(sentences(srt), ["¿Vienes a la fiesta?", "Sí, ahora mismo voy."]);
+    }
+
+    #[test]
+    fn two_sentences_in_one_cue_are_two_sentences() {
+        let srt = "1\n00:00:01,000 --> 00:00:04,000\nNo lo sé. Pregúntale a tu madre, que ella sabe.\n\n2\n00:00:05,000 --> 00:00:06,000\nNo quiero ir\n\n3\n00:00:06,000 --> 00:00:08,000\na la escuela. ¿Vienes conmigo o no?\n";
+        let found = lines_to_sentences(&parse_subtitles(srt));
+        let texts: Vec<&str> = found.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            ["No lo sé.", "Pregúntale a tu madre, que ella sabe.", "No quiero ir a la escuela.", "¿Vienes conmigo o no?"]
+        );
+        assert_eq!((found[2].start_ms, found[2].end_ms), (5_000, 8_000));
+        assert_eq!(found[3].start_ms, 6_000);
+    }
+
+    #[test]
+    fn short_sentences_and_abbreviations_are_not_split_off() {
+        let srt = "1\n00:00:01,000 --> 00:00:03,000\nHola. ¿Qué tal?\n\n2\n00:00:04,000 --> 00:00:06,000\nPues... no sé qué decirte.\n\n3\n00:00:07,000 --> 00:00:09,000\nBuenos días, Sr. García. ¿Cómo está usted?\n\n4\n00:00:10,000 --> 00:00:12,000\nLo escribió J. R. R. Tolkien, creo.\n";
+        assert_eq!(
+            sentences(srt),
+            [
+                "Hola. ¿Qué tal?",
+                "Pues... no sé qué decirte.",
+                "Buenos días, Sr. García.",
+                "¿Cómo está usted?",
+                "Lo escribió J. R. R. Tolkien, creo.",
+            ]
+        );
     }
 
     #[test]
