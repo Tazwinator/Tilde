@@ -728,15 +728,30 @@ fn descriptive(g: &str) -> bool {
 
 /// Up to three senses within 48 characters: short enough for an answer button.
 fn join_glosses(glosses: &[String]) -> String {
-    let mut chosen: Vec<&str> = Vec::new();
+    let mut chosen: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
     let mut len = 0;
     for g in glosses {
-        let n = g.chars().count();
+        // later senses often repeat an earlier one's words ("and; plus, and"):
+        // keep only what's new, and skip a sense with nothing new
+        let mut fresh: Vec<&str> = Vec::new();
+        for part in g.split(", ") {
+            let key = part.to_lowercase();
+            if !seen.contains(&key) && !fresh.iter().any(|f| f.to_lowercase() == key) {
+                fresh.push(part);
+            }
+        }
+        if fresh.is_empty() {
+            continue;
+        }
+        let sense = fresh.join(", ");
+        let n = sense.chars().count();
         if !chosen.is_empty() && len + 2 + n > 48 {
             break;
         }
         len += if chosen.is_empty() { n } else { n + 2 };
-        chosen.push(g);
+        seen.extend(fresh.iter().map(|p| p.to_lowercase()));
+        chosen.push(sense);
         if chosen.len() == 3 {
             break;
         }
@@ -1081,6 +1096,27 @@ mod tests {
         assert_eq!(
             clean_derived("neuter singular of ése; that").as_deref(),
             Some("that")
+        );
+    }
+
+    #[test]
+    fn joined_glosses_do_not_repeat_themselves() {
+        let senses = |s: &[&str]| s.iter().map(|g| g.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            join_glosses(&senses(&["and", "plus, and", "well"])),
+            "and; plus; well"
+        );
+        assert_eq!(
+            join_glosses(&senses(&["father, parent", "father"])),
+            "father, parent"
+        );
+        assert_eq!(
+            join_glosses(&senses(&["Saturday", "Sabbath, sabbath"])),
+            "Saturday; Sabbath"
+        );
+        assert_eq!(
+            join_glosses(&senses(&["to see, to spot", "to see, to look at, to view"])),
+            "to see, to spot; to look at, to view"
         );
     }
 }
