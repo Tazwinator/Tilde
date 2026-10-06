@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Round } from "$lib/contract";
   import { grade } from "$lib/grading";
+  import { typingInto } from "$lib/keys";
   import { sfx } from "$lib/sfx";
 
   type RoundT = Extract<Round, { type: "conjugation" }>;
@@ -31,7 +32,8 @@
   }
 
   function onKey(e: KeyboardEvent) {
-    if (e.key === "Enter") {
+    // inside the input, the form submits on Enter by itself
+    if (e.key === "Enter" && !typingInto(e)) {
       const form = document.getElementById("conj-form") as HTMLFormElement | null;
       form?.requestSubmit();
     }

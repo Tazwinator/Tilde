@@ -5,6 +5,7 @@
   import { playRoundAudio } from "$lib/audio";
   import { sfx } from "$lib/sfx";
   import { grade } from "$lib/grading";
+  import { typingInto } from "$lib/keys";
   import type { Round, SessionStart, SessionSummary } from "$lib/contract";
 
   let session = $state<SessionStart | null>(null);
@@ -16,6 +17,7 @@
   let xp = $state(0);
   let roundStart = $state(0);
   let submitting = $state(false);
+  let dictation = $state<HTMLInputElement>();
 
   const round = $derived(session?.rounds[idx] ?? null);
   const prompt = $derived.by(() => {
@@ -37,6 +39,11 @@
     else if (r.type === "listen_type") playRoundAudio(r.audioBase64, r.sentenceEs);
     else if (r.type === "choice" && r.promptLang === "es") playRoundAudio(null, r.prompt);
   }
+
+  // straight into the box: sidecar is meant to be answered without the mouse
+  $effect(() => {
+    if (round?.type === "listen_type") dictation?.focus();
+  });
 
   onMount(async () => {
     session = await api.startSession("sidecar");
@@ -105,11 +112,15 @@
       return;
     }
     if (phase !== "playing") return;
-    if (e.code === "Space") {
+    // Ctrl+Space replays from anywhere; plain Space does too, unless it's
+    // a space being typed into the dictation box
+    if (e.code === "Space" && (e.ctrlKey || !typingInto(e))) {
       e.preventDefault();
       playCurrent();
       return;
     }
+    // in the box, Enter is the form's submit and digits are just digits
+    if (typingInto(e)) return;
     if (e.key === "Enter" && round?.type === "listen_type") {
       void answerTyped(e);
       return;
@@ -136,6 +147,7 @@
       {#if round.type === "listen_type"}
         <form onsubmit={answerTyped} class="w-full max-w-lg">
           <input
+            bind:this={dictation}
             type="text"
             bind:value={typed}
             class="w-full rounded-2xl border border-white/15 bg-white/5 px-5 py-4 text-center text-2xl outline-none focus:border-grape-400"
@@ -151,7 +163,7 @@
         onclick={() => playCurrent()}
         aria-label="Reproducir audio de nuevo"
       >
-        🔊 otra vez <span class="text-white/40">(Espacio)</span>
+        🔊 otra vez <span class="text-white/40">({round.type === "listen_type" ? "Ctrl+Espacio" : "Espacio"})</span>
       </button>
     </div>
 

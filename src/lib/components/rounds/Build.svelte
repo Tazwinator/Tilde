@@ -62,7 +62,10 @@
   }
 
   function onKey(e: KeyboardEvent) {
-    if (e.key === "Enter") check();
+    // Enter on a focused tile places or removes that tile (its own click);
+    // only an Enter with no button focused means "Comprobar"
+    if (e.key !== "Enter" || e.target instanceof HTMLButtonElement) return;
+    check();
   }
 </script>
 
