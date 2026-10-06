@@ -13,7 +13,7 @@ fn content_db() -> ContentDb {
     } else {
         std::path::PathBuf::from("../resources/content.db")
     };
-    ContentDb::open(&p)
+    ContentDb::open(&p).unwrap()
 }
 
 /// A fresh user DB per test: tests run in parallel and must not share progress.

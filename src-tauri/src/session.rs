@@ -887,6 +887,7 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/resources/content.db"
         )))
+        .unwrap()
     }
 
     fn with_ctx<T>(f: impl FnOnce(&mut GenCtx) -> T) -> T {

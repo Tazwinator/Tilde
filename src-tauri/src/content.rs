@@ -12,13 +12,17 @@ impl ContentDb {
     /// Opens the bundled DB as immutable: installed resources live in read-only
     /// directories, where SQLite can't create the -shm file a WAL-mode database
     /// (as built by older pipelines) needs even for reads.
-    pub fn open(path: &std::path::Path) -> ContentDb {
+    pub fn open(path: &std::path::Path) -> Result<ContentDb, String> {
         let conn = Connection::open_with_flags(
             immutable_uri(path),
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
         )
-        .unwrap_or_else(|e| panic!("open content db at {}: {e}", path.display()));
-        ContentDb { conn }
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+        // opening is lazy; read something so a damaged file fails here, not
+        // in the middle of a session
+        conn.query_row("SELECT id FROM words LIMIT 1", [], |_| Ok(()))
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(ContentDb { conn })
     }
 
     pub fn meta(&self, key: &str) -> Option<String> {
@@ -316,10 +320,20 @@ mod tests {
         }
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
 
-        let lemma = std::panic::catch_unwind(|| ContentDb::open(&path).word(1).map(|w| w.lemma));
+        let lemma = ContentDb::open(&path).map(|c| c.word(1).map(|w| w.lemma));
 
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(lemma.unwrap(), Some("hablar".to_string()));
+    }
+
+    #[test]
+    fn a_missing_or_damaged_content_db_is_an_error_not_a_panic() {
+        let dir = std::env::temp_dir().join(format!("tilde_content_bad_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(ContentDb::open(&dir.join("missing.db")).is_err());
+        let junk = dir.join("junk.db");
+        std::fs::write(&junk, b"this is not a database at all, just bytes").unwrap();
+        assert!(ContentDb::open(&junk).is_err());
     }
 }

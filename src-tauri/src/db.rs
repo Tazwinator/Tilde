@@ -80,6 +80,46 @@ pub fn open(path: &std::path::Path) -> Result<Connection, String> {
     Ok(conn)
 }
 
+/// Opens the progress DB at startup, when there's no UI yet to restore from.
+///
+/// A file that's damaged (not a database, or failing its quick check) is moved
+/// aside, never deleted, and a fresh database started in its place, so Tilde
+/// still opens and a backup can be restored from Settings; the second value
+/// says where it went. Anything else, a file from a newer Tilde included,
+/// is returned as an error with the file left alone.
+pub fn open_or_set_aside(path: &std::path::Path) -> Result<(Connection, Option<std::path::PathBuf>), String> {
+    let err = match open(path) {
+        Ok(conn) => return Ok((conn, None)),
+        Err(e) => e,
+    };
+    if !damaged(path) {
+        return Err(err);
+    }
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    let with = |p: &std::path::Path, suffix: &str| {
+        let mut s = p.as_os_str().to_owned();
+        s.push(suffix);
+        std::path::PathBuf::from(s)
+    };
+    let aside = with(path, &format!(".damaged-{stamp}"));
+    std::fs::rename(path, &aside).map_err(|e| e.to_string())?;
+    for ext in ["-wal", "-shm"] {
+        let _ = std::fs::rename(with(path, ext), with(&aside, ext));
+    }
+    Ok((open(path)?, Some(aside)))
+}
+
+fn damaged(path: &std::path::Path) -> bool {
+    use rusqlite::ErrorCode::{DatabaseCorrupt, NotADatabase};
+    let check = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .and_then(|c| c.query_row("PRAGMA quick_check", [], |r| r.get::<_, String>(0)));
+    match check {
+        Ok(result) => result != "ok",
+        Err(rusqlite::Error::SqliteFailure(e, _)) => matches!(e.code, NotADatabase | DatabaseCorrupt),
+        Err(_) => false,
+    }
+}
+
 pub fn schema_version(conn: &Connection) -> Result<i64, String> {
     conn.query_row("PRAGMA user_version", [], |r| r.get(0))
         .map_err(|e| e.to_string())
@@ -160,6 +200,20 @@ mod tests {
     }
 
     #[test]
+    fn a_damaged_database_is_set_aside_and_a_fresh_one_started() {
+        let path = temp_db("damaged");
+        std::fs::write(&path, b"garbage where progress used to be").unwrap();
+        let (conn, aside) = open_or_set_aside(&path).unwrap();
+        let aside = aside.expect("the damaged file was set aside");
+        assert_eq!(std::fs::read(&aside).unwrap(), b"garbage where progress used to be");
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+
+        let healthy = temp_db("healthy");
+        drop(open(&healthy).unwrap());
+        assert!(open_or_set_aside(&healthy).unwrap().1.is_none());
+    }
+
+    #[test]
     fn a_database_from_a_newer_app_is_refused_and_left_alone() {
         let path = temp_db("newer");
         {
@@ -167,6 +221,8 @@ mod tests {
             newer.pragma_update(None, "user_version", SCHEMA_VERSION + 1).unwrap();
         }
         let err = open(&path).expect_err("newer schema must be refused");
+        assert!(err.contains("más nueva"), "{err}");
+        let err = open_or_set_aside(&path).expect_err("not damaged, just newer");
         assert!(err.contains("más nueva"), "{err}");
         let conn = Connection::open(&path).unwrap();
         assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION + 1);

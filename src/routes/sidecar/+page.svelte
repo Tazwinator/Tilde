@@ -6,6 +6,7 @@
   import { sfx } from "$lib/sfx";
   import { grade } from "$lib/grading";
   import { typingInto } from "$lib/keys";
+  import { reportError } from "$lib/errors.svelte";
   import type { Round, SessionStart, SessionSummary } from "$lib/contract";
 
   let session = $state<SessionStart | null>(null);
@@ -85,7 +86,8 @@
         durationMs: Math.round(performance.now() - roundStart),
       });
       xp += feedback.xpGained;
-    } catch {
+    } catch (e) {
+      reportError(e);
       submitting = false;
       chosen = null;
       return;

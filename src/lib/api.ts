@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke as tauriInvoke, type InvokeArgs } from "@tauri-apps/api/core";
 import type {
   BackupFolder,
   Badge,
@@ -23,6 +23,23 @@ import type {
 
 // Thin typed wrapper over the Tauri commands in src-tauri/src/lib.rs.
 // Run the UI with `npm run tauri dev`; there is no browser-only backend.
+
+// The slowest command is speech: two engines with a 10 s limit each.
+const TIMEOUT_MS = 30_000;
+
+/** `invoke`, but a call that never answers (a command that crashed) fails
+ * after a while instead of leaving a spinner up forever. */
+async function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`Tilde no ha respondido (${cmd}).`)), TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([tauriInvoke<T>(cmd, args), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 export const api = {
   async profile(): Promise<Profile> {

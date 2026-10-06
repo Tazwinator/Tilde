@@ -3,9 +3,18 @@
   import { fade, fly } from "svelte/transition";
   import type { Snippet } from "svelte";
   import { page } from "$app/state";
+  import { onMount } from "svelte";
   import { sfx } from "$lib/sfx";
+  import { failure, reportError } from "$lib/errors.svelte";
 
   let { children }: { children: Snippet } = $props();
+
+  // a failed call nobody caught still gets said out loud, with a way out
+  onMount(() => {
+    const onRejection = (e: PromiseRejectionEvent) => reportError(e.reason);
+    window.addEventListener("unhandledrejection", onRejection);
+    return () => window.removeEventListener("unhandledrejection", onRejection);
+  });
 
   interface NavItem {
     href: string;
@@ -91,4 +100,22 @@
   </div>
 {:else}
   {@render children()}
+{/if}
+
+{#if failure.message}
+  <div
+    class="anim-pop fixed bottom-6 left-1/2 z-[9800] flex w-[min(40rem,calc(100%-2rem))] -translate-x-1/2 items-start gap-4 rounded-3xl bg-coral-500 px-6 py-4 text-white shadow-2xl"
+    role="alert"
+  >
+    <div class="min-w-0 flex-1">
+      <p class="text-lg font-extrabold">Algo ha fallado 😕</p>
+      <p class="mt-0.5 break-words text-base text-white/90">{failure.message}</p>
+    </div>
+    <button class="pressable shrink-0 rounded-2xl bg-white/20 px-4 py-2 font-bold hover:bg-white/30" onclick={() => location.reload()}>
+      Recargar
+    </button>
+    <button class="shrink-0 px-1 py-2 text-xl font-black text-white/80 hover:text-white" aria-label="Cerrar" onclick={() => (failure.message = null)}>
+      ✕
+    </button>
+  </div>
 {/if}

@@ -22,7 +22,8 @@ fn mock_app_speaking(tts: impl FnOnce(&std::path::Path) -> tts::Tts) -> tauri::A
     let content = ContentDb::open(std::path::Path::new(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/resources/content.db"
-    )));
+    )))
+    .unwrap();
     let user = db::open(&app_dir.join("tilde_user.db")).unwrap();
     let tts = Arc::new(tts(&app_dir));
     mock_builder()
@@ -564,4 +565,24 @@ fn starting_a_session_does_not_wait_for_speech() {
             }
         },
     );
+}
+
+#[test]
+fn one_command_panicking_does_not_take_the_rest_down() {
+    with_app(|app| {
+        let state = app.state::<AppState>();
+        // a command panics while it holds the progress DB
+        std::thread::scope(|s| {
+            let _ = s
+                .spawn(|| {
+                    let _held = state.user.lock().unwrap();
+                    panic!("simulated bug in a command");
+                })
+                .join();
+        });
+        assert!(state.user.is_poisoned());
+        assert_eq!(profile_get(app.state()).xp, 0);
+        let start = session_start(app.state(), SessionKind::Quick);
+        assert!(answer(app, &start, 0, true).combo >= 1);
+    });
 }

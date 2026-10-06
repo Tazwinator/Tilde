@@ -4,6 +4,7 @@
   import { api } from "$lib/api";
   import { confetti } from "$lib/confetti";
   import { sfx } from "$lib/sfx";
+  import { reportError } from "$lib/errors.svelte";
   import type { RoundFeedback, SessionKind, SessionStart, SessionSummary } from "$lib/contract";
   import Modal from "$lib/components/Modal.svelte";
   import NewWord from "$lib/components/rounds/NewWord.svelte";
@@ -61,7 +62,8 @@
         quality: quality ?? null,
         missedWordIds: missedWordIds ?? [],
       });
-    } catch {
+    } catch (e) {
+      reportError(e);
       submitting = false;
       return;
     }
