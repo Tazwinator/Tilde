@@ -74,6 +74,18 @@ impl Tts {
         }
     }
 
+    /// Speaks with `espeak` (in tests, a stand-in script) and nothing else.
+    #[cfg(test)]
+    pub(crate) fn with_espeak(app_dir: &Path, espeak: PathBuf) -> Tts {
+        let cache_dir = app_dir.join("audio_cache");
+        let _ = std::fs::create_dir_all(&cache_dir);
+        Tts {
+            espeak: Some(espeak),
+            cache_dir,
+            ..Tts::off(app_dir)
+        }
+    }
+
     fn working_piper(&self) -> Option<&Piper> {
         self.piper
             .as_ref()
@@ -103,6 +115,20 @@ impl Tts {
         self.working_piper().is_some() || self.espeak.is_some()
     }
 
+    /// Audio for `text` if it has already been synthesized by the current
+    /// engine; never starts an engine, so it's safe on a hot path.
+    pub fn cached(&self, text: &str) -> Option<String> {
+        let text = text.trim();
+        let (engine, voice) = if self.working_piper().is_some() {
+            ("piper", VOICE)
+        } else if self.espeak.is_some() {
+            ("espeak-ng", "es")
+        } else {
+            return None;
+        };
+        read_b64(&self.wav_path(engine, voice, text))
+    }
+
     /// Returns base64-encoded wav audio for `text`, using the cache when possible.
     pub fn speak(&self, text: &str) -> Option<String> {
         let text = text.trim();
@@ -110,7 +136,7 @@ impl Tts {
             return None;
         }
         if let Some(piper) = self.working_piper() {
-            let spoken = self.cached("piper", VOICE, text, |out| {
+            let spoken = self.cached_or_make("piper", VOICE, text, |out| {
                 let mut cmd = Command::new(&piper.bin);
                 cmd.arg("-m")
                     .arg(&piper.model)
@@ -131,7 +157,7 @@ impl Tts {
             }
         }
         let espeak = self.espeak.as_ref()?;
-        self.cached("espeak-ng", "es", text, |out| {
+        self.cached_or_make("espeak-ng", "es", text, |out| {
             // the text goes in on stdin: as an argument, text starting with
             // "-" would be read as an option
             let mut cmd = Command::new(espeak);
@@ -140,32 +166,37 @@ impl Tts {
         })
     }
 
-    /// The cached wav for (engine, voice, text), synthesizing it with
-    /// `synth(path)` on a miss.
-    fn cached(&self, engine: &str, voice: &str, text: &str, synth: impl FnOnce(&Path) -> bool) -> Option<String> {
+    fn wav_path(&self, engine: &str, voice: &str, text: &str) -> PathBuf {
         let mut hasher = Sha1::new();
         hasher.update(engine.as_bytes());
         hasher.update(voice.as_bytes());
         hasher.update(text.as_bytes());
-        let key = hex::encode(hasher.finalize());
-        let wav = self.cache_dir.join(format!("{key}.wav"));
+        self.cache_dir.join(format!("{}.wav", hex::encode(hasher.finalize())))
+    }
+
+    /// The cached wav for (engine, voice, text), synthesizing it with
+    /// `synth(path)` on a miss.
+    fn cached_or_make(&self, engine: &str, voice: &str, text: &str, synth: impl FnOnce(&Path) -> bool) -> Option<String> {
+        let wav = self.wav_path(engine, voice, text);
         if !wav.exists() {
             // a private temp name, so two synths of the same text can't collide
             // and a killed run never leaves a truncated wav in the cache
-            let tmp = self.cache_dir.join(format!(
-                "{key}.{}-{}.tmp.wav",
-                std::process::id(),
-                TMP.fetch_add(1, Ordering::Relaxed)
-            ));
+            let mut tmp = wav.clone().into_os_string();
+            tmp.push(format!(".{}-{}.tmp", std::process::id(), TMP.fetch_add(1, Ordering::Relaxed)));
+            let tmp = PathBuf::from(tmp);
             let made = synth(&tmp) && tmp.exists() && std::fs::rename(&tmp, &wav).is_ok();
             let _ = std::fs::remove_file(&tmp);
             if !made {
                 return None;
             }
         }
-        let bytes = std::fs::read(&wav).ok()?;
-        Some(base64::engine::general_purpose::STANDARD.encode(bytes))
+        read_b64(&wav)
     }
+}
+
+fn read_b64(wav: &Path) -> Option<String> {
+    let bytes = std::fs::read(wav).ok()?;
+    Some(base64::engine::general_purpose::STANDARD.encode(bytes))
 }
 
 /// Runs `cmd` with `input` on stdin; false if it fails or outlives `timeout`

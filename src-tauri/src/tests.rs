@@ -8,6 +8,10 @@ use std::time::Duration;
 use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
 
 fn mock_app() -> tauri::App<MockRuntime> {
+    mock_app_speaking(tts::Tts::off)
+}
+
+fn mock_app_speaking(tts: impl FnOnce(&std::path::Path) -> tts::Tts) -> tauri::App<MockRuntime> {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let app_dir = std::env::temp_dir().join(format!(
         "tilde_cmd_test_{}_{}",
@@ -20,7 +24,7 @@ fn mock_app() -> tauri::App<MockRuntime> {
         "/resources/content.db"
     )));
     let user = db::open(&app_dir.join("tilde_user.db")).unwrap();
-    let tts = tts::Tts::off(&app_dir);
+    let tts = Arc::new(tts(&app_dir));
     mock_builder()
         .manage(AppState {
             content: Mutex::new(content),
@@ -37,9 +41,16 @@ fn mock_app() -> tauri::App<MockRuntime> {
 /// Runs `f` against a fresh mock app on its own thread, failing (rather than
 /// hanging the test run) if it doesn't return — e.g. a mutex re-lock deadlock.
 fn with_app<T: Send + 'static>(f: impl FnOnce(&tauri::App<MockRuntime>) -> T + Send + 'static) -> T {
+    with(mock_app, f)
+}
+
+fn with<T: Send + 'static>(
+    app: impl FnOnce() -> tauri::App<MockRuntime> + Send + 'static,
+    f: impl FnOnce(&tauri::App<MockRuntime>) -> T + Send + 'static,
+) -> T {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let app = mock_app();
+        let app = app();
         let _ = tx.send(f(&app));
     });
     match rx.recv_timeout(Duration::from_secs(30)) {
@@ -115,7 +126,7 @@ fn round_wire_format_matches_contract_ts() {
             audio_base64: None,
         },
         Round::Match { id: 0, pairs: vec![] },
-        Round::Listen { id: 0, word_id: 1, audio_base64: None, options: vec![], answer_index: 0 },
+        Round::Listen { id: 0, word_id: 1, es: String::new(), audio_base64: None, options: vec![], answer_index: 0 },
         Round::ListenType {
             id: 0,
             word_id: 1,
@@ -517,4 +528,40 @@ fn every_logged_round_type_has_a_stats_label() {
     for tag in ts_round_keys().into_keys().filter(|t| t != "new_word") {
         assert!(labelled.contains(&tag), "no stats label for round type {tag}");
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn starting_a_session_does_not_wait_for_speech() {
+    use std::os::unix::fs::PermissionsExt;
+    // a voice that takes half a second per phrase, like Piper on a cold start
+    let slow_voice = |app_dir: &std::path::Path| {
+        let script = app_dir.join("slow-espeak");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nout=\"\"\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = \"-w\" ]; then out=\"$2\"; shift; fi\n  shift\ndone\nsleep 0.5\ncat > \"$out\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        tts::Tts::with_espeak(app_dir, script)
+    };
+    with(
+        move || mock_app_speaking(slow_voice),
+        |app| {
+            let started = std::time::Instant::now();
+            let start = session_start(app.state(), SessionKind::Standard);
+            let took = started.elapsed();
+            // 18 rounds at half a second each would be 9 s and more
+            assert!(took < Duration::from_secs(2), "session_start took {took:?}");
+
+            // ...and the first round's audio turns up in the background
+            let Round::NewWord { word, .. } = &start.rounds[0] else { panic!("first round is an intro") };
+            let state = app.state::<AppState>();
+            let deadline = std::time::Instant::now() + Duration::from_secs(20);
+            while state.tts.cached(&word.lemma).is_none() {
+                assert!(std::time::Instant::now() < deadline, "audio for {} never arrived", word.lemma);
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        },
+    );
 }

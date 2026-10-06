@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::Manager;
 use tilde_core::types::{
     BackupFolder, Badge, Profile, Round, RoundFeedback, RoundResult, SessionKind, SessionStart, SessionSummary, Settings, WordHit,
@@ -24,10 +24,13 @@ use tilde_core::types::{
     PlacementAnswer, PlacementItem, PlacementResult, StatsData, SeriesPoint,
 };
 
+// Every command is `#[tauri::command(async)]`: it runs on Tauri's thread
+// pool, so a slow one (TTS, a big subtitle file, a backup) never freezes the
+// window. Locks are always taken in the order sessions → user → content.
 pub struct AppState {
     pub content: Mutex<ContentDb>,
     pub user: Mutex<Connection>,
-    pub tts: tts::Tts,
+    pub tts: Arc<tts::Tts>,
     pub app_dir: PathBuf,
     pub sessions: Mutex<HashMap<i64, Session>>,
     pub next_session: AtomicI64,
@@ -82,7 +85,7 @@ fn cefr_estimate(words_known: i64) -> &'static str {
 // Commands
 // ---------------------------------------------------------------------------
 
-#[tauri::command]
+#[tauri::command(async)]
 fn profile_get(state: tauri::State<AppState>) -> Profile {
     let conn = state.user.lock().unwrap();
     let (reviews_due, learning, known) = deck::counts(&conn);
@@ -129,7 +132,7 @@ fn profile_get(state: tauri::State<AppState>) -> Profile {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn session_start(state: tauri::State<AppState>, kind: SessionKind) -> SessionStart {
     let conn = state.user.lock().unwrap();
     let s = settings(&conn);
@@ -143,6 +146,18 @@ fn session_start(state: tauri::State<AppState>, kind: SessionKind) -> SessionSta
         frontier(&conn),
     );
     drop(conn);
+    drop(content);
+    // synthesize the audio the rounds will want, in play order, while the
+    // player gets going; rounds fetch anything not ready yet on demand
+    if !generated.to_speak.is_empty() {
+        let tts = Arc::clone(&state.tts);
+        let texts = generated.to_speak;
+        std::thread::spawn(move || {
+            for text in texts {
+                tts.speak(&text);
+            }
+        });
+    }
     let id = state.next_session.fetch_add(1, Ordering::SeqCst);
     let session = Session {
         kind,
@@ -167,7 +182,7 @@ fn session_start(state: tauri::State<AppState>, kind: SessionKind) -> SessionSta
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn round_submit(
     state: tauri::State<AppState>,
     session_id: i64,
@@ -318,7 +333,7 @@ fn match_round_id(r: &Round) -> i64 {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn session_finish(state: tauri::State<AppState>, session_id: i64) -> SessionSummary {
     let mut sessions = state.sessions.lock().unwrap();
     let Some(mut session) = sessions.remove(&session_id) else {
@@ -425,20 +440,20 @@ fn session_finish(state: tauri::State<AppState>, session_id: i64) -> SessionSumm
 
 // --- placement ---
 
-#[tauri::command]
+#[tauri::command(async)]
 fn placement_status(state: tauri::State<AppState>) -> Option<PlacementResult> {
     let conn = state.user.lock().unwrap();
     db::get_setting(&conn, "placement")
         .and_then(|v| serde_json::from_str(&v).ok())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn placement_start(state: tauri::State<AppState>) -> Vec<PlacementItem> {
     let content = state.content.lock().unwrap();
     session::placement_items(&content)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn placement_submit(
     state: tauri::State<AppState>,
     answers: Vec<PlacementAnswer>,
@@ -469,14 +484,14 @@ fn hit(conn: &Connection, w: &tilde_core::types::WordCard) -> WordHit {
     session::to_hit(w, known)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn word_search(state: tauri::State<AppState>, query: String, limit: i64) -> Vec<WordHit> {
     let words = state.content.lock().unwrap().search(&query, limit);
     let conn = state.user.lock().unwrap();
     words.iter().map(|w| hit(&conn, w)).collect()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn word_detail(state: tauri::State<AppState>, word_id: i64) -> Option<WordDetail> {
     let w = state.content.lock().unwrap().word(word_id)?;
     let conn = state.user.lock().unwrap();
@@ -525,13 +540,13 @@ fn word_detail(state: tauri::State<AppState>, word_id: i64) -> Option<WordDetail
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn word_mark_known(state: tauri::State<AppState>, word_id: i64) {
     let conn = state.user.lock().unwrap();
     deck::mark_known(&conn, word_id);
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn word_reset(state: tauri::State<AppState>, word_id: i64) {
     let conn = state.user.lock().unwrap();
     deck::reset(&conn, word_id);
@@ -539,12 +554,12 @@ fn word_reset(state: tauri::State<AppState>, word_id: i64) {
 
 // --- tts ---
 
-#[tauri::command]
+#[tauri::command(async)]
 fn tts_speak(state: tauri::State<AppState>, text: String) -> Option<String> {
     state.tts.speak(&text)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn tts_info(state: tauri::State<AppState>) -> TtsInfo {
     TtsInfo {
         engine: state.tts.engine().into(),
@@ -553,7 +568,7 @@ fn tts_info(state: tauri::State<AppState>) -> TtsInfo {
 }
 
 /// Attribution for the bundled word data (its licenses require it in-app).
-#[tauri::command]
+#[tauri::command(async)]
 fn content_credits(state: tauri::State<AppState>) -> String {
     state.content.lock().unwrap().meta("sources").unwrap_or_default()
 }
@@ -571,7 +586,7 @@ impl tilde_core::srt::WordMatcher for DbMatcher<'_> {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn srt_import(state: tauri::State<AppState>, title: String, text: String) -> ImportReport {
     let lines = tilde_core::srt::parse_subtitles(&text);
     let sentences = tilde_core::srt::lines_to_sentences(&lines);
@@ -645,7 +660,7 @@ fn srt_import(state: tauri::State<AppState>, title: String, text: String) -> Imp
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn sentences_list(state: tauri::State<AppState>) -> Vec<MinedSentence> {
     let conn = state.user.lock().unwrap();
     let mut stmt = conn
@@ -665,7 +680,7 @@ fn sentences_list(state: tauri::State<AppState>) -> Vec<MinedSentence> {
     .unwrap_or_default()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn sentence_add_to_deck(state: tauri::State<AppState>, id: i64) {
     let conn = state.user.lock().unwrap();
     conn.execute("UPDATE mined SET in_deck = 1 WHERE id = ?1", [id])
@@ -684,7 +699,7 @@ fn sentence_add_to_deck(state: tauri::State<AppState>, id: i64) {
 
 // --- stats ---
 
-#[tauri::command]
+#[tauri::command(async)]
 fn stats_get(state: tauri::State<AppState>) -> StatsData {
     let conn = state.user.lock().unwrap();
     let weeks: Vec<(i64, f64, i64)> = {
@@ -794,12 +809,12 @@ fn stats_get(state: tauri::State<AppState>) -> StatsData {
 
 // --- settings / badges / backup ---
 
-#[tauri::command]
+#[tauri::command(async)]
 fn settings_get(state: tauri::State<AppState>) -> Settings {
     settings(&state.user.lock().unwrap())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn settings_set(state: tauri::State<AppState>, settings: Settings) -> Settings {
     {
         let conn = state.user.lock().unwrap();
@@ -810,7 +825,7 @@ fn settings_set(state: tauri::State<AppState>, settings: Settings) -> Settings {
     settings
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn badges_list(state: tauri::State<AppState>) -> Vec<Badge> {
     let conn = state.user.lock().unwrap();
     let mut earned: HashMap<String, i64> = HashMap::new();
@@ -838,13 +853,13 @@ fn user_db_path(app_dir: &std::path::Path) -> PathBuf {
     app_dir.join("tilde_user.db")
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn backup_folder(state: tauri::State<AppState>) -> BackupFolder {
     backup::describe(&state.app_dir)
 }
 
 /// `dir: None` goes back to the default folder inside the app's data dir.
-#[tauri::command]
+#[tauri::command(async)]
 fn backup_folder_set(state: tauri::State<AppState>, dir: Option<String>) -> Result<BackupFolder, String> {
     let dir = backup::set_folder(&state.app_dir, dir.as_deref())?;
     // Start the new folder off with today's progress rather than waiting for
@@ -856,7 +871,7 @@ fn backup_folder_set(state: tauri::State<AppState>, dir: Option<String>) -> Resu
     Ok(backup::describe(&state.app_dir))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn backup_export(state: tauri::State<AppState>) -> Result<String, String> {
     let conn = state.user.lock().unwrap();
     backup::write(&conn, &backup::folder(&state.app_dir), backup::Kind::Manual)
@@ -876,19 +891,19 @@ fn restore_from(state: &AppState, bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn backup_import(state: tauri::State<AppState>, bytes: Vec<u8>) -> Result<(), String> {
     restore_from(&state, &bytes)
 }
 
 /// Restores one of the backups listed by `backup_folder`.
-#[tauri::command]
+#[tauri::command(async)]
 fn backup_restore(state: tauri::State<AppState>, path: String) -> Result<(), String> {
     let bytes = std::fs::read(&path).map_err(|e| format!("No se pudo leer la copia: {e}"))?;
     restore_from(&state, &bytes)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn progress_reset(state: tauri::State<AppState>) -> Result<(), String> {
     state.sessions.lock().unwrap().clear();
     let mut conn = state.user.lock().unwrap();
@@ -940,7 +955,7 @@ pub fn run() {
             let _ = std::fs::create_dir_all(&app_dir);
             let content = ContentDb::open(&resolve_content_db(app.handle()));
             let user = db::open(&user_db_path(&app_dir))?;
-            let tts = tts::Tts::discover(&app_dir);
+            let tts = Arc::new(tts::Tts::discover(&app_dir));
             app.manage(AppState {
                 content: Mutex::new(content),
                 user: Mutex::new(user),

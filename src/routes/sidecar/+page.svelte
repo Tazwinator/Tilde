@@ -35,7 +35,7 @@
 
   function playCurrent(r: Round | null = round) {
     if (!r) return;
-    if (r.type === "listen") playRoundAudio(r.audioBase64, r.options[r.answerIndex]);
+    if (r.type === "listen") playRoundAudio(r.audioBase64, r.es);
     else if (r.type === "listen_type") playRoundAudio(r.audioBase64, r.sentenceEs);
     else if (r.type === "choice" && r.promptLang === "es") playRoundAudio(null, r.prompt);
   }

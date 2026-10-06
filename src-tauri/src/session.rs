@@ -96,17 +96,27 @@ struct GenCtx<'a> {
     frontier: i64,
     used_sentences: &'a mut HashSet<i64>,
     introduced: &'a mut HashSet<i64>,
+    to_speak: std::cell::RefCell<Vec<String>>,
 }
 
 impl<'a> GenCtx<'a> {
+    /// Audio that's already cached. Anything else is queued for synthesis in
+    /// the background rather than made here: with Piper that's a process
+    /// start per round, seconds per session, and the player would wait.
     fn audio(&self, text: &str) -> Option<String> {
-        self.tts.speak(text)
+        let cached = self.tts.cached(text);
+        if cached.is_none() && self.tts.available() {
+            self.to_speak.borrow_mut().push(text.to_string());
+        }
+        cached
     }
 }
 
 pub struct Generated {
     pub rounds: Vec<Round>,
     pub round_types: Vec<&'static str>,
+    /// Texts the rounds will want spoken, in round order, not yet cached.
+    pub to_speak: Vec<String>,
 }
 
 pub fn generate(
@@ -128,6 +138,7 @@ pub fn generate(
         frontier,
         used_sentences: &mut used_sentences,
         introduced: &mut introduced,
+        to_speak: Default::default(),
     };
 
     let (rounds, round_types) = match kind {
@@ -135,7 +146,34 @@ pub fn generate(
         SessionKind::ReviewOnly => gen_reviews(&mut ctx, n),
         _ => gen_mixed(&mut ctx, kind, n),
     };
-    Generated { rounds, round_types }
+    // Generation order isn't play order (gen_mixed shuffles), so queue the
+    // texts in the order the rounds will be played, each once.
+    let queued: HashSet<String> = ctx.to_speak.take().into_iter().collect();
+    let mut seen = HashSet::new();
+    let to_speak = rounds
+        .iter()
+        .flat_map(spoken_texts)
+        .filter(|t| queued.contains(t) && seen.insert(t.clone()))
+        .collect();
+    Generated { rounds, round_types, to_speak }
+}
+
+/// What the player will hear in a round (what `audio()` was asked for).
+fn spoken_texts(round: &Round) -> Vec<String> {
+    match round {
+        Round::NewWord { word, .. } => vec![word.lemma.clone()],
+        Round::Choice { prompt, prompt_lang, options, answer_index, .. } => {
+            if prompt_lang == "es" {
+                vec![prompt.clone()]
+            } else {
+                options.get(*answer_index as usize).cloned().into_iter().collect()
+            }
+        }
+        Round::Listen { es, .. } => vec![es.clone()],
+        Round::ListenType { sentence_es, .. } => vec![sentence_es.clone()],
+        Round::ReviewCard { es, .. } => vec![es.clone()],
+        _ => vec![],
+    }
 }
 
 fn gen_reviews(ctx: &mut GenCtx, n: usize) -> (Vec<Round>, Vec<&'static str>) {
@@ -196,6 +234,7 @@ fn gen_sidecar(ctx: &mut GenCtx, n: usize) -> (Vec<Round>, Vec<&'static str>) {
             rounds.push(Round::Listen {
                 id: i as i64,
                 word_id: w.word_id,
+                es: w.lemma.clone(),
                 audio_base64: ctx.audio(&w.lemma),
                 options: opts,
                 answer_index,
@@ -506,6 +545,7 @@ fn listen_round(ctx: &mut GenCtx, id: i64, w: &WordCard) -> (Round, &'static str
         Round::Listen {
             id,
             word_id: w.word_id,
+            es: w.lemma.clone(),
             audio_base64: ctx.audio(&w.lemma),
             options: opts,
             answer_index,
@@ -863,6 +903,7 @@ mod tests {
             frontier: 1,
             used_sentences: &mut used,
             introduced: &mut introduced,
+            to_speak: Default::default(),
         };
         f(&mut ctx)
     }

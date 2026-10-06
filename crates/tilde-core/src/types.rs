@@ -106,6 +106,9 @@ pub enum Round {
     Listen {
         id: i64,
         word_id: i64,
+        /// The Spanish the audio says, for speaking it when no audio came
+        /// with the round (options may be meanings, not the word itself).
+        es: String,
         audio_base64: Option<String>,
         options: Vec<String>,
         answer_index: i32,

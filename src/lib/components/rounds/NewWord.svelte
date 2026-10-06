@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import type { Round } from "$lib/contract";
   import { glossText, posLabel } from "$lib/defs";
   import { playRoundAudio } from "$lib/audio";
@@ -17,6 +18,9 @@
   } = $props();
 
   const gloss = $derived(glossText(round.word, definitionLang));
+
+  // the round's audio is the word itself; hear it as the card appears
+  onMount(() => playRoundAudio(round.audioBase64, round.word.lemma));
 </script>
 
 <div class="card anim-pop mx-auto max-w-xl p-8 text-center">
@@ -33,7 +37,7 @@
         <button
           class="pressable rounded-full bg-white/10 px-3 py-1 text-sm font-bold hover:bg-white/20"
           aria-label="Escuchar ejemplo"
-          onclick={() => playRoundAudio(round.audioBase64, round.exampleEs ?? undefined)}
+          onclick={() => playRoundAudio(null, round.exampleEs ?? undefined)}
         >
           🔊
         </button>

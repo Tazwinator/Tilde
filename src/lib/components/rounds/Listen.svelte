@@ -18,7 +18,7 @@
   const answerText = $derived(round.options[round.answerIndex]);
 
   function play() {
-    playRoundAudio(round.audioBase64, answerText);
+    playRoundAudio(round.audioBase64, round.es);
   }
 
   onMount(play);

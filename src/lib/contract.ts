@@ -55,7 +55,7 @@ export type Round =
   | ({ type: "new_word"; id: number; word: WordCard; exampleEs: string | null; exampleEn: string | null; audioBase64: string | null })
   | ({ type: "choice"; id: number; wordId: number; prompt: string; promptLang: "es" | "en"; options: string[]; answerIndex: number; audioBase64: string | null })
   | ({ type: "match"; id: number; pairs: MatchPair[] })
-  | ({ type: "listen"; id: number; wordId: number; audioBase64: string | null; options: string[]; answerIndex: number })
+  | ({ type: "listen"; id: number; wordId: number; es: string; audioBase64: string | null; options: string[]; answerIndex: number })
   | ({ type: "listen_type"; id: number; wordId: number; sentenceEs: string; audioBase64: string | null; answer: string })
   | ({ type: "build"; id: number; wordId: number; sentenceEs: string; sentenceEn: string; tiles: string[]; answer: string })
   | ({ type: "cloze"; id: number; wordId: number; sentenceEs: string; sentenceEn: string; options: string[]; answerIndex: number })
