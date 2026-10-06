@@ -94,8 +94,17 @@ The word database built from the data above (`src-tauri/resources/content.db`)
 is shared under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/);
 see [its notice](src-tauri/resources/CONTENT_LICENSE.md).
 
-## Multi-language future
+## Other languages
 
-The content pipeline and schema are language-agnostic (`words.lang`,
-per-language packs). New languages only need a new pipeline run — the app
-itself is ready for them.
+Tilde teaches Castilian Spanish only. The content schema has a `lang`
+column, but nothing reads it yet, and most of the rest is built around
+Spanish:
+
+- the pipeline maps Wiktionary's Spanish conjugation tables onto the app's
+  tenses, and flags Latin-American and vulgar senses;
+- the subtitle tokenizer, its stopword list and the answer checking (ñ as
+  its own letter, accent slips) are Spanish-specific;
+- the interface is written in Spanish, and the voice is Castilian.
+
+Another language would need its own pipeline run and those parts
+generalised: doable, but more than a configuration change.
