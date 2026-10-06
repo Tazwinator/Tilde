@@ -4,6 +4,7 @@ on:
   push:
     branches: [master]
   pull_request:
+  workflow_dispatch: # "Run workflow" button on the Actions tab
 
 concurrency:
   group: ci-${{ github.ref }}
