@@ -118,22 +118,31 @@ impl ContentDb {
             .unwrap_or_default()
     }
 
+    /// Distractors for `word`: same part of speech, similar frequency, and no
+    /// meaning in common. Sharing any gloss part makes two answers both right:
+    /// "ser" and "estar" are both "to be", "tu" and "su" both "your".
     pub fn similar_words(&self, word: &WordCard, limit: i64) -> Vec<WordCard> {
+        let meanings = gloss_parts(word.gloss_en.as_deref());
         let mut stmt = self
             .conn
             .prepare(
                 "SELECT id, lemma, pos, rank, gloss_en, gloss_es FROM words
                  WHERE id != ?1 AND gloss_en IS NOT NULL AND lemma != ?2
                    AND (pos IS ?3 OR pos IS NULL) AND ABS(rank - ?4) < 4000
-                   AND register IS NULL AND gloss_en IS NOT (SELECT gloss_en FROM words WHERE id = ?1)
-                 ORDER BY ABS(rank - ?4) LIMIT ?5",
+                   AND register IS NULL
+                 ORDER BY ABS(rank - ?4)",
             )
             .unwrap();
         stmt.query_map(
-            rusqlite::params![word.word_id, word.lemma, word.pos, word.rank, limit],
+            rusqlite::params![word.word_id, word.lemma, word.pos, word.rank],
             word_from_row,
         )
-        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .map(|rows| {
+            rows.filter_map(|r| r.ok())
+                .filter(|w| gloss_parts(w.gloss_en.as_deref()).is_disjoint(&meanings))
+                .take(limit.max(0) as usize)
+                .collect()
+        })
         .unwrap_or_default()
     }
 
@@ -300,6 +309,16 @@ fn word_from_row(r: &rusqlite::Row) -> rusqlite::Result<WordCard> {
         gloss_es: r.get(5)?,
         level: tilde_core::cefr_for_rank(rank).to_string(),
     })
+}
+
+/// The separate meanings in a gloss: "to be; to be present" → {"to be", "to be present"}.
+fn gloss_parts(gloss: Option<&str>) -> HashSet<String> {
+    gloss
+        .unwrap_or("")
+        .split([';', ','])
+        .map(|p| p.trim().to_lowercase())
+        .filter(|p| !p.is_empty())
+        .collect()
 }
 
 /// Subtitle word lookup. A form that is itself a dictionary word counts for

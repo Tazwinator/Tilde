@@ -978,4 +978,23 @@ mod tests {
             .chain(&content.verbs(2_000))
             .all(|w| !["mierda", "joder", "computadora"].contains(&w.lemma.as_str())));
     }
+
+    #[test]
+    fn distractors_never_mean_the_same_thing() {
+        let content = content();
+        let lemmas = |w: &str| -> Vec<String> {
+            content.similar_words(&word(&content, w), 12).into_iter().map(|d| d.lemma).collect()
+        };
+        assert!(!lemmas("ser").iter().any(|l| l == "estar" || l == "haber"), "{:?}", lemmas("ser"));
+        assert!(!lemmas("tu").iter().any(|l| l == "su"), "{:?}", lemmas("tu"));
+
+        let parts = |g: &Option<String>| -> HashSet<String> {
+            g.as_deref().unwrap_or("").split([';', ',']).map(|p| p.trim().to_lowercase()).filter(|p| !p.is_empty()).collect()
+        };
+        for w in content.words_by_rank(1, 300) {
+            for d in content.similar_words(&w, 8) {
+                assert!(parts(&w.gloss_en).is_disjoint(&parts(&d.gloss_en)), "{} / {}: {:?} vs {:?}", w.lemma, d.lemma, w.gloss_en, d.gloss_en);
+            }
+        }
+    }
 }
