@@ -185,7 +185,7 @@
           {#if round.type === "new_word"}
             <NewWord round={round} {definitionLang} onAnswered={handleAnswered} />
           {:else if round.type === "choice"}
-            <Choice round={round} onAnswered={handleAnswered} />
+            <Choice round={round} {definitionLang} onAnswered={handleAnswered} />
           {:else if round.type === "match"}
             <Match round={round} onAnswered={handleAnswered} />
           {:else if round.type === "listen"}

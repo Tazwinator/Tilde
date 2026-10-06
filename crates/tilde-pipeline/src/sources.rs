@@ -8,8 +8,9 @@ pub struct Source {
     pub name: &'static str,
     pub url: &'static str,
     pub file: &'static str,
-    /// Expected SHA-256 for pinned downloads. Wiktionary is re-extracted weekly
-    /// at a fixed URL, so it can't be pinned; its hash is recorded instead.
+    /// Expected SHA-256 for pinned downloads. The Wiktionary extracts are
+    /// redone weekly at fixed URLs, so they can't be pinned; their hashes are
+    /// recorded in the database's meta table instead.
     pub sha256: Option<&'static str>,
 }
 
@@ -24,6 +25,13 @@ pub const WIKTIONARY: Source = Source {
     name: "Wiktionary Spanish (kaikki.org extraction)",
     url: "https://kaikki.org/dictionary/Spanish/kaikki.org-dictionary-Spanish.jsonl.gz",
     file: "kaikki-spanish.jsonl.gz",
+    sha256: None,
+};
+
+pub const ES_WIKTIONARY: Source = Source {
+    name: "Wikcionario, the Spanish Wiktionary (kaikki.org extraction)",
+    url: "https://kaikki.org/eswiktionary/raw-wiktextract-data.jsonl.gz",
+    file: "kaikki-eswiktionary.jsonl.gz",
     sha256: None,
 };
 

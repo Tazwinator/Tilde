@@ -35,3 +35,13 @@ const POS_LABELS: Record<string, string> = {
 export function posLabel(pos: string): string {
   return POS_LABELS[pos] ?? pos;
 }
+
+/**
+ * Font size for an answer button: Spanish definitions ("Edificación
+ * destinada a vivienda") run far longer than English glosses ("house").
+ */
+export function textSize(text: string, normal = "text-2xl"): string {
+  if (text.length > 60) return "text-base";
+  if (text.length > 28) return "text-lg";
+  return normal;
+}

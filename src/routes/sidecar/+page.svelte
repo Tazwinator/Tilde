@@ -5,6 +5,7 @@
   import { playRoundAudio } from "$lib/audio";
   import { sfx } from "$lib/sfx";
   import { grade } from "$lib/grading";
+  import { textSize } from "$lib/defs";
   import { typingInto } from "$lib/keys";
   import { reportError } from "$lib/errors.svelte";
   import type { Round, SessionStart, SessionSummary } from "$lib/contract";
@@ -173,7 +174,7 @@
       <div class="grid grid-cols-2 gap-3">
         {#each options as opt, i (i)}
           <button
-            class="rounded-2xl px-5 py-6 text-2xl font-bold transition-all
+            class="rounded-2xl px-5 py-6 {textSize(opt)} font-bold transition-all
               {chosen === null
               ? 'bg-white/5 hover:bg-white/12'
               : i === (round.type === 'choice' || round.type === 'listen' ? round.answerIndex : -1)

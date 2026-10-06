@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Round } from "$lib/contract";
+  import { textSize } from "$lib/defs";
   import { sfx } from "$lib/sfx";
 
   type RoundT = Extract<Round, { type: "match" }>;
@@ -70,7 +71,7 @@
     <div class="flex flex-col gap-3">
       {#each left as t (t.wordId)}
         <button
-          class="min-h-16 rounded-2xl border-2 px-4 py-3 text-xl font-bold transition-all
+          class="min-h-16 rounded-2xl border-2 px-4 py-3 {textSize(t.text, 'text-xl')} font-bold transition-all
             {matched.includes(t.wordId)
             ? 'border-lime-500/60 bg-lime-500/20 text-lime-500'
             : selectedEs === t.wordId
@@ -86,7 +87,7 @@
     <div class="flex flex-col gap-3">
       {#each right as t (t.wordId)}
         <button
-          class="min-h-16 rounded-2xl border-2 px-4 py-3 text-xl font-bold transition-all
+          class="min-h-16 rounded-2xl border-2 px-4 py-3 {textSize(t.text, 'text-xl')} font-bold transition-all
             {matched.includes(t.wordId)
             ? 'border-lime-500/60 bg-lime-500/20 text-lime-500'
             : wrongShake === t.wordId

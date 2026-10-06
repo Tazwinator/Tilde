@@ -74,8 +74,8 @@ fn build(
         let tx = conn.transaction()?;
         {
             let mut word = tx.prepare(
-                "INSERT INTO words(id, lemma, pos, rank, gloss_en, region, register)
-                 VALUES (?1, ?2, ?3, ?1, ?4, ?5, ?6)",
+                "INSERT INTO words(id, lemma, pos, rank, gloss_en, gloss_es, region, register)
+                 VALUES (?1, ?2, ?3, ?1, ?4, ?5, ?6, ?7)",
             )?;
             let mut form =
                 tx.prepare("INSERT OR IGNORE INTO forms(form, word_id, tag) VALUES (?1, ?2, ?3)")?;
@@ -84,7 +84,9 @@ fn build(
             )?;
             for (i, w) in words.iter().enumerate() {
                 let id = i as i64 + 1;
-                word.execute(params![id, w.lemma, w.pos, w.gloss, w.region, w.register])?;
+                word.execute(params![
+                    id, w.lemma, w.pos, w.gloss, w.gloss_es, w.region, w.register
+                ])?;
                 for (f, tag) in &w.forms {
                     form.execute(params![f, id, tag])?;
                 }

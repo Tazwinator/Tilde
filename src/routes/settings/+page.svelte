@@ -126,7 +126,10 @@
     <!-- Definition language -->
     <section class="card p-6">
       <h2 class="text-2xl font-extrabold">Idioma de definiciones</h2>
-      <p class="mt-1 text-base text-white/60">¿Prefieres las traducciones en inglés o en español?</p>
+      <p class="mt-1 text-base text-white/60">
+        ¿Traducciones en inglés o definiciones en español? Las definiciones vienen del Wikcionario; si una palabra aún no
+        tiene, sale en inglés.
+      </p>
       <div class="mt-4 flex gap-3">
         <button
           class="pressable rounded-2xl px-6 py-3 text-lg font-extrabold transition-colors

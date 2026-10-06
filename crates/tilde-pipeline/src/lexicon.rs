@@ -473,6 +473,8 @@ pub struct Lemma {
     pub lemma: String,
     pub pos: String,
     pub gloss: String,
+    /// A Spanish definition, from the Spanish Wiktionary (see definiciones.rs).
+    pub gloss_es: Option<String>,
     /// "latam" when every sense is labelled as used outside Spain.
     pub region: Option<&'static str>,
     /// "vulgar" when every sense is vulgar or a slur.
@@ -577,6 +579,7 @@ fn build_lemma(
         lemma: word.to_string(),
         pos,
         gloss,
+        gloss_es: None,
         region: index.region(word),
         register: index.register(word),
         forms,

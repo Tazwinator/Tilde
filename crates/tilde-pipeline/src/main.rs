@@ -5,6 +5,7 @@
 //! Downloads are cached in the data dir (default: `data/` at the repo root).
 
 mod db;
+mod definiciones;
 mod lexicon;
 mod sentences;
 mod sources;
@@ -19,6 +20,7 @@ const MAX_WORDS: usize = 12_000;
 const ATTRIBUTION: &str = "Word frequencies: FrequencyWords by Hermit Dave \
 (github.com/hermitdave/FrequencyWords), from OpenSubtitles 2018, CC BY-SA 4.0. \
 Lemmas, glosses, inflections and conjugations: Wiktionary contributors (en.wiktionary.org) \
+via kaikki.org, CC BY-SA 4.0. Spanish definitions: Wikcionario contributors (es.wiktionary.org) \
 via kaikki.org, CC BY-SA 4.0. Example sentences: Tatoeba contributors (tatoeba.org) via OPUS, \
 CC BY 2.0 FR. This word database is shared under CC BY-SA 4.0 \
 (creativecommons.org/licenses/by-sa/4.0).";
@@ -87,6 +89,7 @@ fn main() {
     };
     let (freq_path, freq_sha) = fetch(&sources::FREQUENCY);
     let (wikt_path, wikt_sha) = fetch(&sources::WIKTIONARY);
+    let (wikcionario_path, wikcionario_sha) = fetch(&sources::ES_WIKTIONARY);
     let (tatoeba_path, tatoeba_sha) = fetch(&sources::TATOEBA);
 
     println!("[2/5] indexing Wiktionary");
@@ -102,11 +105,20 @@ fn main() {
 
     println!("[4/5] glosses, inflections and conjugation tables");
     let mut details = lexicon::details(gz(&wikt_path), &shortlist, &index, &gloss_overrides());
-    let words: Vec<lexicon::Lemma> = ranked
+    let mut words: Vec<lexicon::Lemma> = ranked
         .iter()
         .filter_map(|(w, _)| details.remove(w))
         .take(MAX_WORDS)
         .collect();
+    let wanted: HashMap<String, String> = words
+        .iter()
+        .map(|w| (w.lemma.clone(), w.pos.clone()))
+        .collect();
+    let mut definitions = definiciones::spanish_definitions(gz(&wikcionario_path), &wanted);
+    for w in &mut words {
+        w.gloss_es = definitions.remove(&w.lemma);
+    }
+    let defined = words.iter().filter(|w| w.gloss_es.is_some()).count();
     let verbs = words.iter().filter(|w| !w.conjugations.is_empty()).count();
     let latam: Vec<&str> = words
         .iter()
@@ -118,7 +130,10 @@ fn main() {
         .filter(|w| w.register.is_some())
         .map(|w| w.lemma.as_str())
         .collect();
-    println!("  words: {}  verbs with tables: {verbs}", words.len());
+    println!(
+        "  words: {}  verbs with tables: {verbs}  Spanish definitions: {defined}",
+        words.len()
+    );
     println!(
         "  top 40: {}",
         words
@@ -172,6 +187,7 @@ fn main() {
         ("sources", ATTRIBUTION.to_string()),
         ("sha256_frequency", freq_sha),
         ("sha256_wiktionary", wikt_sha),
+        ("sha256_wikcionario", wikcionario_sha),
         ("sha256_tatoeba", tatoeba_sha),
     ];
     db::write(&args.out, &words, &picked, &meta).unwrap_or_else(|e| {

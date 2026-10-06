@@ -1,21 +1,28 @@
 <script lang="ts">
   import type { Round } from "$lib/contract";
+  import { textSize } from "$lib/defs";
   import { sfx } from "$lib/sfx";
 
   type RoundT = Extract<Round, { type: "choice" }>;
 
   let {
     round,
+    definitionLang = "en",
     onAnswered,
   }: {
     round: RoundT;
+    definitionLang?: string;
     onAnswered: (correct: boolean, correctText?: string | null) => void;
   } = $props();
 
   let chosen = $state<number | null>(null);
   const answerText = $derived(round.options[round.answerIndex]);
   const promptText = $derived(
-    round.promptLang === "es" ? `¿Qué significa «${round.prompt}»?` : `¿Cómo se dice «${round.prompt}»?`,
+    round.promptLang === "es"
+      ? `¿Qué significa «${round.prompt}»?`
+      : definitionLang === "es"
+        ? `¿Qué palabra significa «${round.prompt}»?` // the prompt is a Spanish definition
+        : `¿Cómo se dice «${round.prompt}»?`,
   );
 
   function pick(i: number) {
@@ -41,7 +48,7 @@
   <div class="grid grid-cols-2 gap-4">
     {#each round.options as opt, i (i)}
       <button
-        class="anim-pop min-h-24 rounded-3xl border-2 px-5 py-4 text-2xl font-bold transition-all duration-150
+        class="anim-pop min-h-24 rounded-3xl border-2 px-5 py-4 {textSize(opt)} font-bold transition-all duration-150
           {chosen === null
           ? 'border-white/10 bg-white/5 hover:-translate-y-0.5 hover:border-grape-400/60 hover:bg-white/10'
           : i === round.answerIndex

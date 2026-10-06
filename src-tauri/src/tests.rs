@@ -73,6 +73,7 @@ fn commands_that_read_settings_do_not_deadlock() {
         let hits = word_search(app.state(), "hablar".into(), 5);
         assert!(hits.iter().any(|h| h.lemma == "hablar"));
         assert!(content_credits(app.state()).contains("Wiktionary"));
+        assert!(content_credits(app.state()).contains("Wikcionario"));
 
         let hablar = hits.iter().find(|h| h.lemma == "hablar").unwrap();
         let detail = word_detail(app.state(), hablar.word_id).expect("word detail");
@@ -639,5 +640,26 @@ fn each_session_card_says_how_many_new_words_it_brings() {
         let counts = profile_get(app.state()).new_words_by_kind;
         let n = |k: &str| counts.get(k).copied();
         assert_eq!((n("quick"), n("standard"), n("deep"), n("review_only")), (Some(2), Some(3), Some(6), Some(0)));
+    });
+}
+
+#[test]
+fn spanish_first_shows_spanish_definitions() {
+    with_app(|app| {
+        let mut s = settings_get(app.state());
+        s.definition_lang = "es".into();
+        settings_set(app.state(), s);
+        let casa = word_search(app.state(), "casa".into(), 1).remove(0);
+        assert_eq!(casa.gloss_es.as_deref(), Some("Edificación destinada a vivienda"));
+
+        // an intro card's word carries it, and "es → meaning" choices offer definitions
+        let start = session_start(app.state(), SessionKind::Deep);
+        let spanish = start.rounds.iter().any(|r| match r {
+            Round::Choice { prompt_lang, options, answer_index, .. } if prompt_lang == "es" => {
+                options[*answer_index as usize].split_whitespace().count() > 2
+            }
+            _ => false,
+        });
+        assert!(spanish, "no choice round offered a Spanish definition");
     });
 }

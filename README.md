@@ -65,7 +65,7 @@ fresh clone builds and tests straight away. Rebuild it only when changing
 the content pipeline:
 
 ```sh
-cargo run --release -p tilde-pipeline   # downloads ~100 MB of open data into data/ once
+cargo run --release -p tilde-pipeline   # downloads ~200 MB of open data into data/ once
 ```
 
 Hand-made corrections to the data (gloss overrides, homographs) live in
@@ -80,6 +80,8 @@ Tests: `cargo test --workspace` and `npm test`.
 - Lemmas, English glosses, inflections and conjugation tables:
   [Wiktionary](https://en.wiktionary.org/) contributors, via
   [kaikki.org](https://kaikki.org/) (CC BY-SA 4.0)
+- Spanish definitions: [Wikcionario](https://es.wiktionary.org/)
+  contributors, via [kaikki.org](https://kaikki.org/) (CC BY-SA 4.0)
 - Example sentences: [Tatoeba](https://tatoeba.org/) contributors via
   [OPUS](https://opus.nlpl.eu/) (CC BY 2.0 FR)
 - TTS: [Piper](https://github.com/rhasspy/piper) with the
