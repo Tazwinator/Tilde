@@ -21,7 +21,9 @@ pub struct Profile {
     pub minutes_total: i64,
     pub cefr_estimate: String,
     pub reviews_due: i64,
-    pub new_words_ready: i64,
+    /// New words each kind of session would introduce right now, keyed by
+    /// the session kind ("quick", "standard", "deep", "review_only").
+    pub new_words_by_kind: std::collections::BTreeMap<String, i64>,
     pub days_since_last_session: i64,
     pub sessions_total: i64,
     pub badges_count: i64,

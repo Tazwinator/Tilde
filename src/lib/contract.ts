@@ -26,7 +26,7 @@ export interface Profile {
   minutesTotal: number;
   cefrEstimate: string;
   reviewsDue: number;
-  newWordsReady: number;
+  newWordsByKind: Record<string, number>; // per session kind: how many new words it would introduce
   daysSinceLastSession: number;
   sessionsTotal: number;
   badgesCount: number;

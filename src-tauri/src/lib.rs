@@ -126,6 +126,23 @@ fn profile_get(state: tauri::State<AppState>) -> Profile {
         .query_row("SELECT COUNT(*) FROM badges", [], |r| r.get(0))
         .unwrap_or(0);
     let s = settings(&conn);
+    // capped by what's actually left to learn from the frontier up
+    let new_words = {
+        let kinds = [SessionKind::Quick, SessionKind::Standard, SessionKind::Deep, SessionKind::ReviewOnly];
+        let most = kinds.iter().map(|k| session::new_word_count(*k)).max().unwrap_or(0);
+        let left = state
+            .content
+            .locked()
+            .new_candidates(frontier(&conn), most, &deck::card_ids(&conn))
+            .len();
+        kinds
+            .iter()
+            .map(|k| {
+                let key = serde_json::to_value(k).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
+                (key, session::new_word_count(*k).min(left) as i64)
+            })
+            .collect()
+    };
     Profile {
         xp,
         level,
@@ -136,7 +153,7 @@ fn profile_get(state: tauri::State<AppState>) -> Profile {
         minutes_total,
         cefr_estimate: cefr_estimate(known).to_string(),
         reviews_due,
-        new_words_ready: 20,
+        new_words_by_kind: new_words,
         days_since_last_session: if sessions_total == 0 { -1 } else { days_since },
         sessions_total,
         badges_count,

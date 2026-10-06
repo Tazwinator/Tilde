@@ -632,3 +632,12 @@ fn mined_words_are_the_ones_in_the_sentence_not_their_relatives() {
         assert!(!carded, "adding a sentence about a mother put 'padre' in the deck");
     });
 }
+
+#[test]
+fn each_session_card_says_how_many_new_words_it_brings() {
+    with_app(|app| {
+        let counts = profile_get(app.state()).new_words_by_kind;
+        let n = |k: &str| counts.get(k).copied();
+        assert_eq!((n("quick"), n("standard"), n("deep"), n("review_only")), (Some(2), Some(3), Some(6), Some(0)));
+    });
+}

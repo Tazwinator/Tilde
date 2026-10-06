@@ -51,6 +51,14 @@ pub fn round_count(kind: SessionKind) -> usize {
     }
 }
 
+/// How many new words a session of this kind introduces (with an intro card).
+pub fn new_word_count(kind: SessionKind) -> usize {
+    match kind {
+        SessionKind::ReviewOnly | SessionKind::Sidecar => 0,
+        _ => (round_count(kind) / 5).max(2),
+    }
+}
+
 fn shuffle<T>(mut v: Vec<T>) -> Vec<T> {
     // deterministic-ish light shuffle (xorshift seeded by time)
     let mut seed = std::time::SystemTime::now()
@@ -285,7 +293,7 @@ fn gen_sidecar(ctx: &mut GenCtx, n: usize) -> (Vec<Round>, Vec<&'static str>) {
 
 fn gen_mixed(ctx: &mut GenCtx, kind: SessionKind, n: usize) -> (Vec<Round>, Vec<&'static str>) {
     let n_review = if kind == SessionKind::Quick { n / 3 } else { n * 2 / 5 };
-    let n_new = (n / 5).max(2);
+    let n_new = new_word_count(kind);
     let n_games = n - n_review - n_new;
 
     // gather pools

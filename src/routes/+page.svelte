@@ -74,10 +74,14 @@
         <div class="flex-1">
           <h2 class="text-2xl font-extrabold">¡Qué gusto verte!</h2>
           <p class="text-lg text-white/80">
-            Your {profile.wordsKnown} words are safe and waiting. A 4-minute session is ready.
+            Tus {profile.wordsKnown} palabras siguen aquí, esperándote.
+            {profile.reviewsDue > 0 ? "Un repaso de 4 minutos y a tope." : "Una sesión rápida de 3 minutos y a tope."}
           </p>
         </div>
-        <button class="pressable rounded-2xl bg-lime-500 px-6 py-3 text-lg font-extrabold text-night-900 shadow-lg shadow-lime-500/30 hover:brightness-110" onclick={() => play("review_only")}>
+        <button
+          class="pressable rounded-2xl bg-lime-500 px-6 py-3 text-lg font-extrabold text-night-900 shadow-lg shadow-lime-500/30 hover:brightness-110"
+          onclick={() => play(profile!.reviewsDue > 0 ? "review_only" : "quick")}
+        >
           Empezar →
         </button>
       </section>
@@ -88,6 +92,7 @@
       <h2 class="mb-4 text-2xl font-extrabold">Elige tu aventura</h2>
       <div class="grid gap-4 sm:grid-cols-2">
         {#each CARDS as c (c.kind)}
+          {@const fresh = profile.newWordsByKind[c.kind] ?? 0}
           <button
             class="card card-hover pressable group flex items-center gap-4 p-5 text-left"
             onclick={() => play(c.kind)}
@@ -97,8 +102,10 @@
               <span class="block text-xl font-extrabold">{c.title}</span>
               <span class="block text-base text-white/60">{c.desc}</span>
               <span class="mt-1 flex gap-2 text-sm font-semibold">
-                <span class="rounded-full bg-coral-500/20 px-2.5 py-0.5 text-coral-500">🔔 {profile.reviewsDue} repasos</span>
-                <span class="rounded-full bg-tubo-500/20 px-2.5 py-0.5 text-tubo-500">✨ {profile.newWordsReady} nuevas</span>
+                <span class="rounded-full bg-coral-500/20 px-2.5 py-0.5 text-coral-500">🔔 {profile.reviewsDue} {profile.reviewsDue === 1 ? "repaso" : "repasos"}</span>
+                {#if fresh > 0}
+                  <span class="rounded-full bg-tubo-500/20 px-2.5 py-0.5 text-tubo-500">✨ {fresh} {fresh === 1 ? "nueva" : "nuevas"}</span>
+                {/if}
               </span>
             </span>
             <span class="text-2xl text-white/30 transition-transform group-hover:translate-x-1" aria-hidden="true">→</span>
