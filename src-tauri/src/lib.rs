@@ -8,7 +8,6 @@ pub mod tts;
 #[cfg(test)]
 mod tests;
 
-use base64::Engine;
 use content::ContentDb;
 use rusqlite::Connection;
 use session::{Session};
@@ -1063,9 +1062,4 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
-}
-
-/// Utility kept for future base64 audio plumbing in commands.
-pub fn b64(bytes: &[u8]) -> String {
-    base64::engine::general_purpose::STANDARD.encode(bytes)
 }
