@@ -33,10 +33,3 @@ hex = "0.4.3"
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }
-
-[profile.release]
-codegen-units = 1
-lto = true
-opt-level = 3
-panic = "abort"
-strip = true

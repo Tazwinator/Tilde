@@ -12,3 +12,11 @@ serde_json = "1"
 rusqlite = { version = "0.37", features = ["bundled"] }
 regex = "1"
 thiserror = "2"
+
+# Profiles only take effect here, at the workspace root (Cargo ignored them
+# in src-tauri/Cargo.toml). Smaller, faster release binaries; panics still
+# unwind, so one failing command can't take the whole app down with it.
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true
