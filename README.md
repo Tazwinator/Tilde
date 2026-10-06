@@ -1,5 +1,7 @@
 # Tilde ~
 
+[![CI](https://github.com/Tazwinator/Tilde/actions/workflows/ci.yml/badge.svg)](https://github.com/Tazwinator/Tilde/actions/workflows/ci.yml)
+
 A playful, zero-pressure Spanish trainer for Linux. Built to be picked up
 whenever you feel like it — for three minutes or twenty — with no streaks,
 no daily goals and no guilt mechanics. Absence costs nothing; progress is
