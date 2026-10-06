@@ -34,7 +34,8 @@ on two evidence-based ideas:
   *tiene* count towards *tener*) with English glosses, example sentences and
   conjugation tables.
 - **Offline text-to-speech** — a real Castilian neural voice (Piper), with
-  every word and sentence speakable.
+  every word and sentence speakable. Without Piper, or if it stops working,
+  Tilde uses `espeak-ng` when it's installed.
 - **Stats without shame** — weekly minutes, XP, vocabulary growth curves.
 - **Backup / restore** — one zip file, fully under your control.
 
@@ -47,7 +48,8 @@ Prerequisites: Rust, Node.js, `webkit2gtk-4.1` (see
 [Tauri prerequisites](https://tauri.app/start/prerequisites/)).
 
 ```sh
-# 1. Install the TTS voice (optional but recommended)
+# 1. Install the TTS voice (optional but recommended; Linux x86_64/arm,
+#    macOS). Downloads are pinned and checksum-verified.
 ./scripts/setup-tts.sh
 
 # 2. Run in dev mode (hot reload + webview inspector)

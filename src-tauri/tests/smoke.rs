@@ -36,7 +36,7 @@ fn content_db_has_data() {
 fn generates_every_session_kind() {
     let content = content_db();
     let user = user_db("kinds");
-    let tts = Tts::discover(&std::env::temp_dir()); // 'none' engine in CI
+    let tts = Tts::off(&std::env::temp_dir());
     // something due, so ReviewOnly has a card to show
     deck::introduce(&user, content.new_candidates(1, 1, &Default::default())[0].word_id);
     for kind in [
@@ -56,7 +56,7 @@ fn generates_every_session_kind() {
 fn full_session_lifecycle() {
     let content = content_db();
     let user = user_db("lifecycle");
-    let tts = Tts::discover(&std::env::temp_dir());
+    let tts = Tts::off(&std::env::temp_dir());
 
     // placement
     let items = session::placement_items(&content);

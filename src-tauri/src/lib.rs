@@ -547,8 +547,8 @@ fn tts_speak(state: tauri::State<AppState>, text: String) -> Option<String> {
 #[tauri::command]
 fn tts_info(state: tauri::State<AppState>) -> TtsInfo {
     TtsInfo {
-        engine: state.tts.engine.clone(),
-        voice: state.tts.voice.clone(),
+        engine: state.tts.engine().into(),
+        voice: state.tts.voice().into(),
     }
 }
 

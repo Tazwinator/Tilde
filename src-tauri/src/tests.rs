@@ -20,7 +20,7 @@ fn mock_app() -> tauri::App<MockRuntime> {
         "/resources/content.db"
     )));
     let user = db::open(&app_dir.join("tilde_user.db")).unwrap();
-    let tts = tts::Tts::discover(&app_dir);
+    let tts = tts::Tts::off(&app_dir);
     mock_builder()
         .manage(AppState {
             content: Mutex::new(content),

@@ -853,7 +853,7 @@ mod tests {
         let content = content();
         let dir = std::env::temp_dir();
         let user = crate::db::open(&dir.join(format!("tilde_session_test_{}.db", std::process::id()))).unwrap();
-        let tts = Tts::discover(&dir);
+        let tts = Tts::off(&dir);
         let (mut used, mut introduced) = (HashSet::new(), HashSet::new());
         let mut ctx = GenCtx {
             content: &content,
