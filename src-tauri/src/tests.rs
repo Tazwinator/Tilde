@@ -195,6 +195,14 @@ fn srt_import_matches_words_from_content_db() {
     assert!(report.sentences_added > 0, "{report:?}");
     assert!(!report.top_words.is_empty());
     assert_eq!(listed.len() as i64, report.sentences_added);
+
+    // the same file again adds nothing new
+    let again = with_app(move |app| {
+        srt_import(app.state(), "test.srt".into(), srt.into());
+        let second = srt_import(app.state(), "test.srt".into(), srt.into());
+        (second.sentences_added, sentences_list(app.state()).len())
+    });
+    assert_eq!(again, (0, listed.len()));
 }
 
 fn count(app: &tauri::App<MockRuntime>, table: &str) -> i64 {
@@ -584,5 +592,43 @@ fn one_command_panicking_does_not_take_the_rest_down() {
         assert_eq!(profile_get(app.state()).xp, 0);
         let start = session_start(app.state(), SessionKind::Quick);
         assert!(answer(app, &start, 0, true).combo >= 1);
+    });
+}
+
+#[test]
+fn mined_words_are_the_ones_in_the_sentence_not_their_relatives() {
+    let srt = "1\n00:00:01,000 --> 00:00:03,000\n¿Dónde está la casa de tu madre?\n\n\
+               2\n00:00:04,000 --> 00:00:06,000\nMi hermano vive en Madrid con su mujer.\n";
+    with_app(move |app| {
+        srt_import(app.state(), "test.srt".into(), srt.into());
+        let id = |lemma: &str| word_search(app.state(), lemma.into(), 1)[0].word_id;
+        let state = app.state::<AppState>();
+        let mined = |word_id: i64| -> bool {
+            state
+                .user
+                .lock()
+                .unwrap()
+                .query_row("SELECT EXISTS(SELECT 1 FROM mined_words WHERE word_id = ?1)", [word_id], |r| r.get(0))
+                .unwrap()
+        };
+        for wanted in ["madre", "casa", "hermano", "mujer"] {
+            assert!(mined(id(wanted)), "{wanted} not linked");
+        }
+        // "madre" is also the feminine of "padre", "casa" a form of "casar"...
+        for wrong in ["padre", "casar", "hermana"] {
+            assert!(!mined(id(wrong)), "{wrong} linked to a sentence that doesn't say it");
+        }
+
+        // ...and adding the sentence to the deck must not teach those instead
+        let first = sentences_list(app.state()).into_iter().find(|s| s.es.contains("madre")).unwrap();
+        sentence_add_to_deck(app.state(), first.id);
+        let padre = id("padre");
+        let carded: bool = state
+            .user
+            .lock()
+            .unwrap()
+            .query_row("SELECT EXISTS(SELECT 1 FROM cards WHERE word_id = ?1)", [padre], |r| r.get(0))
+            .unwrap();
+        assert!(!carded, "adding a sentence about a mother put 'padre' in the deck");
     });
 }

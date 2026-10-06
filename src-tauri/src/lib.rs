@@ -589,32 +589,24 @@ fn content_credits(state: tauri::State<AppState>) -> String {
 
 // --- sentence mining ---
 
-struct DbMatcher<'a> {
-    map: HashMap<String, Vec<i64>>,
-    _marker: std::marker::PhantomData<&'a ()>,
-}
-
-impl tilde_core::srt::WordMatcher for DbMatcher<'_> {
-    fn lookup(&self, form: &str) -> Vec<i64> {
-        self.map.get(form).cloned().unwrap_or_default()
-    }
-}
-
 #[tauri::command(async)]
 fn srt_import(state: tauri::State<AppState>, title: String, text: String) -> ImportReport {
     let lines = tilde_core::srt::parse_subtitles(&text);
     let sentences = tilde_core::srt::lines_to_sentences(&lines);
 
-    // build in-memory matcher over the content DB's forms table (accent-insensitive)
-    let matcher = DbMatcher {
-        map: state.content.locked().form_index(),
-        _marker: std::marker::PhantomData,
-    };
+    let matcher = state.content.locked().form_index();
     let conn = state.user.locked();
 
     let mut added = 0i64;
     let mut word_freq: HashMap<i64, i64> = HashMap::new();
-    let mut seen: HashSet<String> = HashSet::new();
+    // sentences already mined, from this file or an earlier import of it
+    let mut seen: HashSet<String> = conn
+        .prepare("SELECT es FROM mined")
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| r.get::<_, String>(0))
+                .map(|rows| rows.filter_map(|r| r.ok()).map(|es| es.to_lowercase()).collect())
+        })
+        .unwrap_or_default();
     for s in &sentences {
         let m = tilde_core::srt::match_sentence(&s.text, &matcher);
         if m.coverage < 0.35 {

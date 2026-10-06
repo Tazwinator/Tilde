@@ -190,21 +190,28 @@ impl ContentDb {
             .unwrap_or_default()
     }
 
-    /// Every known form (lemmas, plurals, conjugations) keyed accent-insensitively,
-    /// for matching free text such as imported subtitles back to word ids.
-    pub fn form_index(&self) -> HashMap<String, Vec<i64>> {
-        let mut stmt = self.conn.prepare("SELECT DISTINCT form, word_id FROM forms").unwrap();
-        let rows: Vec<(String, i64)> = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+    /// Every known form (lemmas, plurals, conjugations), for matching free
+    /// text such as imported subtitles back to word ids.
+    pub fn form_index(&self) -> FormIndex {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT DISTINCT form, word_id, tag = '' FROM forms")
+            .unwrap();
+        let rows: Vec<(String, i64, bool)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
             .map(|rows| rows.filter_map(|r| r.ok()).collect())
             .unwrap_or_default();
-        let mut map: HashMap<String, Vec<i64>> = HashMap::new();
-        for (form, word_id) in rows {
-            map.entry(tilde_core::srt::strip_accents(&form))
-                .or_default()
-                .push(word_id);
+        let mut exact = HashMap::new();
+        let mut folded = HashMap::new();
+        for (form, word_id, is_lemma) in rows {
+            let folded_form = tilde_core::srt::strip_accents(&form);
+            add_candidate(&mut exact, form, word_id, is_lemma);
+            add_candidate(&mut folded, folded_form, word_id, is_lemma);
         }
-        map
+        let strip = |map: HashMap<String, (bool, Vec<i64>)>| {
+            map.into_iter().map(|(form, (_, ids))| (form, ids)).collect()
+        };
+        FormIndex { exact: strip(exact), folded: strip(folded) }
     }
 
     /// A verb (by its main part of speech) with a conjugation table. Nouns that
@@ -293,6 +300,38 @@ fn word_from_row(r: &rusqlite::Row) -> rusqlite::Result<WordCard> {
         gloss_es: r.get(5)?,
         level: tilde_core::cefr_for_rank(rank).to_string(),
     })
+}
+
+/// Subtitle word lookup. A form that is itself a dictionary word counts for
+/// that word only: "madre" is also listed as the feminine of "padre", and
+/// "casa" as a form of "casar", but a sentence saying "madre" or "casa" is
+/// about those words. Exact spelling wins over the accent-free fallback, so
+/// "mi" (my) and "mí" (me) stay apart.
+pub struct FormIndex {
+    exact: HashMap<String, Vec<i64>>,
+    folded: HashMap<String, Vec<i64>>,
+}
+
+impl tilde_core::srt::WordMatcher for FormIndex {
+    fn lookup(&self, form: &str) -> Vec<i64> {
+        self.exact
+            .get(form)
+            .or_else(|| self.folded.get(form))
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
+/// Adds `word_id` under `form`, keeping only lemma matches once there is one.
+fn add_candidate(map: &mut HashMap<String, (bool, Vec<i64>)>, form: String, word_id: i64, is_lemma: bool) {
+    let (has_lemma, ids) = map.entry(form).or_insert((false, Vec::new()));
+    if is_lemma && !*has_lemma {
+        *has_lemma = true;
+        ids.clear();
+    }
+    if (is_lemma || !*has_lemma) && !ids.contains(&word_id) {
+        ids.push(word_id);
+    }
 }
 
 #[cfg(all(test, unix))]

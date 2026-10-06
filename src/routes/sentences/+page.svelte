@@ -1,5 +1,6 @@
 <script lang="ts">
   import { api } from "$lib/api";
+  import { decodeText } from "$lib/decode";
   import { confettiCenter } from "$lib/confetti";
   import { sfx } from "$lib/sfx";
   import type { ImportReport, MinedSentence } from "$lib/contract";
@@ -20,7 +21,7 @@
     if (!file) return;
     importing = true;
     try {
-      const text = await file.text();
+      const text = decodeText(new Uint8Array(await file.arrayBuffer()));
       report = await api.importSrt(file.name, text);
       sentences = await api.listSentences();
       confettiCenter(130);
@@ -85,11 +86,11 @@
           </div>
           <div class="rounded-2xl bg-white/5 p-3">
             <p class="text-2xl font-black text-lime-500">{report.wordsMatched}</p>
-            <p class="text-sm text-white/50">palabras conocidas</p>
+            <p class="text-sm text-white/50">palabras reconocidas</p>
           </div>
         </div>
         {#if report.topWords.length > 0}
-          <p class="mt-4 text-base font-bold text-white/60">Palabras que ya dominas y aparecen ahí:</p>
+          <p class="mt-4 text-base font-bold text-white/60">Las palabras que más aparecen:</p>
           <div class="mt-2 flex flex-wrap gap-2">
             {#each report.topWords as w (w.wordId)}
               <span class="rounded-full bg-lime-500/15 px-3 py-1 text-base font-bold text-lime-500">{w.lemma}</span>
