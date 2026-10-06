@@ -197,6 +197,10 @@ struct Sense<'a> {
     spain: bool,
     marginal: bool,
     vulgar: bool,
+    /// Slang or an insult: only the gloss when there's nothing plainer, so
+    /// "perro" is "dog", not "dog; asshole". (Colloquial senses stay: in
+    /// Spain "tío" is "guy" as much as "uncle".)
+    informal: bool,
     letter: bool,
     /// "comparative degree of malo: worse": a word of its own for learners.
     comparative: bool,
@@ -230,6 +234,9 @@ fn sense(s: &RawSense) -> Option<Sense<'_>> {
         spain: has("Spain"),
         marginal: regional || vulgar || s.tags.iter().any(|t| MARGINAL_TAGS.contains(&t.as_str())),
         vulgar,
+        informal: ["slang", "derogatory", "pejorative", "offensive"]
+            .iter()
+            .any(|t| has(t)),
         letter: lower.contains("name of the")
             || lower.contains("script letter")
             || lower.contains("greek letter")
@@ -523,7 +530,10 @@ fn build_lemma(
     let primary = primary(word, entries);
     let gloss = match overrides.get(word) {
         Some(g) => g.clone(),
-        None => join_glosses(&primary.as_ref()?.1),
+        None => {
+            let (entry, glosses) = primary.as_ref()?;
+            join_glosses(glosses, entry.pos == "verb")
+        }
     };
     let pos = primary
         .map(|(e, _)| &e.pos)
@@ -683,6 +693,7 @@ fn primary<'a>(word: &str, entries: &'a [FullEntry]) -> Option<(&'a FullEntry, V
 fn entry_glosses(word: &str, e: &FullEntry, allow_marginal: bool) -> Vec<String> {
     let closed = class_of(&e.pos) == Some(Class::Closed);
     let mut out: Vec<String> = Vec::new();
+    let mut informal: Vec<String> = Vec::new();
     for s in e.senses.iter().filter_map(sense) {
         if s.letter || (s.marginal && !allow_marginal) {
             continue;
@@ -699,12 +710,20 @@ fn entry_glosses(word: &str, e: &FullEntry, allow_marginal: bool) -> Vec<String>
             a.trim_end_matches('!')
                 .eq_ignore_ascii_case(b.trim_end_matches('!'))
         };
-        if same(&g, word) || descriptive(&g) || out.iter().any(|o| same(o, &g)) {
+        if same(&g, word) || descriptive(&g) || out.iter().chain(&informal).any(|o| same(o, &g)) {
             continue;
         }
-        out.push(g);
+        if s.informal {
+            informal.push(g);
+        } else {
+            out.push(g);
+        }
     }
-    out
+    if out.is_empty() {
+        informal
+    } else {
+        out
+    }
 }
 
 /// Usage notes rather than translations: "Used to express…", "Senses relating to…".
@@ -730,17 +749,25 @@ fn descriptive(g: &str) -> bool {
 }
 
 /// Up to three senses within 48 characters: short enough for an answer button.
-fn join_glosses(glosses: &[String]) -> String {
+fn join_glosses(glosses: &[String], verb: bool) -> String {
     let mut chosen: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     let mut len = 0;
     for g in glosses {
-        // later senses often repeat an earlier one's words ("and; plus, and"):
-        // keep only what's new, and skip a sense with nothing new
+        // later senses often repeat an earlier one's words ("and; plus, and",
+        // and for verbs "to start, begin; to begin"): keep only what's new,
+        // and skip a sense with nothing new. Only for verbs is "to wait" the
+        // same as "wait"; "to you" and "you" are different senses of "te".
+        let key = |part: &str| {
+            let lower = part.to_lowercase();
+            match lower.strip_prefix("to ") {
+                Some(bare) if verb => bare.to_string(),
+                _ => lower,
+            }
+        };
         let mut fresh: Vec<&str> = Vec::new();
         for part in g.split(", ") {
-            let key = part.to_lowercase();
-            if !seen.contains(&key) && !fresh.iter().any(|f| f.to_lowercase() == key) {
+            if !seen.contains(&key(part)) && !fresh.iter().any(|f| key(f) == key(part)) {
                 fresh.push(part);
             }
         }
@@ -753,7 +780,7 @@ fn join_glosses(glosses: &[String]) -> String {
             break;
         }
         len += if chosen.is_empty() { n } else { n + 2 };
-        seen.extend(fresh.iter().map(|p| p.to_lowercase()));
+        seen.extend(fresh.iter().map(|p| key(p)));
         chosen.push(sense);
         if chosen.len() == 3 {
             break;
@@ -927,11 +954,17 @@ mod tests {
         let peor = full(&[
             r#"{"word":"peor","pos":"adj","senses":[{"glosses":["comparative degree of malo: worse"],"tags":["comparative","form-of"],"form_of":[{"word":"malo"}]}]}"#,
         ]);
-        assert_eq!(join_glosses(&primary("peor", &peor).unwrap().1), "worse");
+        assert_eq!(
+            join_glosses(&primary("peor", &peor).unwrap().1, false),
+            "worse"
+        );
         let muy = full(&[
             r#"{"word":"muy","pos":"adv","senses":[{"glosses":["apocopic form of mucho; very"],"tags":["alt-of","apocopic"],"alt_of":[{"word":"mucho"}]}]}"#,
         ]);
-        assert_eq!(join_glosses(&primary("muy", &muy).unwrap().1), "very");
+        assert_eq!(
+            join_glosses(&primary("muy", &muy).unwrap().1, false),
+            "very"
+        );
     }
 
     #[test]
@@ -1041,7 +1074,7 @@ mod tests {
         ]);
         let (e, g) = primary("de", &de).unwrap();
         assert_eq!(
-            (e.pos.as_str(), join_glosses(&g).as_str()),
+            (e.pos.as_str(), join_glosses(&g, false).as_str()),
             ("prep", "of; from")
         );
 
@@ -1050,14 +1083,44 @@ mod tests {
             r#"{"word":"mi","pos":"det","senses":[{"glosses":["apocopic form of mío, my"],"tags":["alt-of"],"alt_of":[{"word":"mío"}]}]}"#,
         ]);
         let (e, g) = primary("mi", &mi).unwrap();
-        assert_eq!((e.pos.as_str(), join_glosses(&g).as_str()), ("det", "my"));
+        assert_eq!(
+            (e.pos.as_str(), join_glosses(&g, false).as_str()),
+            ("det", "my")
+        );
 
         let venir = full(&[
             r#"{"word":"venir","pos":"verb","senses":[{"glosses":["Senses relating to literal movement"]},{"glosses":["Senses relating to literal movement","to come"]},{"glosses":["used to express something"]}]}"#,
         ]);
         assert_eq!(
-            join_glosses(&primary("venir", &venir).unwrap().1),
+            join_glosses(&primary("venir", &venir).unwrap().1, true),
             "to come"
+        );
+    }
+
+    #[test]
+    fn slang_and_insults_only_when_there_is_nothing_plainer() {
+        let perro = full(&[
+            r#"{"word":"perro","pos":"noun","senses":[{"glosses":["dog"]},{"glosses":["asshole (despicable person)"],"tags":["derogatory"]},{"glosses":["lazy person"]}]}"#,
+        ]);
+        assert_eq!(
+            join_glosses(&primary("perro", &perro).unwrap().1, false),
+            "dog; lazy person"
+        );
+        // with nothing plainer, the informal sense is still the gloss
+        let pasta = full(&[
+            r#"{"word":"pasta","pos":"noun","senses":[{"glosses":["dough"],"tags":["slang"]}]}"#,
+        ]);
+        assert_eq!(
+            join_glosses(&primary("pasta", &pasta).unwrap().1, false),
+            "dough"
+        );
+        // colloquial isn't slang: everyday Spain Spanish keeps its place
+        let tio = full(&[
+            r#"{"word":"tío","pos":"noun","senses":[{"glosses":["uncle"]},{"glosses":["dude, guy"],"tags":["colloquial"]}]}"#,
+        ]);
+        assert_eq!(
+            join_glosses(&primary("tío", &tio).unwrap().1, false),
+            "uncle; dude, guy"
         );
     }
 
@@ -1106,20 +1169,39 @@ mod tests {
     fn joined_glosses_do_not_repeat_themselves() {
         let senses = |s: &[&str]| s.iter().map(|g| g.to_string()).collect::<Vec<_>>();
         assert_eq!(
-            join_glosses(&senses(&["and", "plus, and", "well"])),
+            join_glosses(&senses(&["and", "plus, and", "well"]), false),
             "and; plus; well"
         );
         assert_eq!(
-            join_glosses(&senses(&["father, parent", "father"])),
+            join_glosses(&senses(&["father, parent", "father"]), false),
             "father, parent"
         );
         assert_eq!(
-            join_glosses(&senses(&["Saturday", "Sabbath, sabbath"])),
+            join_glosses(&senses(&["Saturday", "Sabbath, sabbath"]), false),
             "Saturday; Sabbath"
         );
         assert_eq!(
-            join_glosses(&senses(&["to see, to spot", "to see, to look at, to view"])),
+            join_glosses(
+                &senses(&["to see, to spot", "to see, to look at, to view"]),
+                true
+            ),
             "to see, to spot; to look at, to view"
+        );
+        assert_eq!(
+            join_glosses(&senses(&["to hope", "to wait, wait"]), true),
+            "to hope; to wait"
+        );
+        assert_eq!(
+            join_glosses(
+                &senses(&["to start, begin, to get started", "to begin"]),
+                true
+            ),
+            "to start, begin, to get started"
+        );
+        // a pronoun's "to you" is not its "you"
+        assert_eq!(
+            join_glosses(&senses(&["to you, for you", "you", "yourself"]), false),
+            "to you, for you; you; yourself"
         );
     }
 }
