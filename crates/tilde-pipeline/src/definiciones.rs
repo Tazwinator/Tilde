@@ -10,8 +10,22 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::BufRead;
 
-/// Longer definitions are cut at a word boundary and end in "…".
+/// Longer definitions are shortened to about this length and end in "…".
 const MAX_CHARS: usize = 90;
+
+/// A definition only a little too long is kept whole: cutting it would save
+/// a few words and lose its end.
+const SLACK: usize = 10;
+
+/// Words a shortened definition shouldn't end on, as they lead into the
+/// part that was cut ("…en este o aquel…").
+const DANGLING: &[&str] = &[
+    "a", "al", "aquel", "aquella", "bajo", "como", "con", "cual", "cuando", "cuya", "cuyo", "de",
+    "del", "desde", "donde", "durante", "e", "el", "en", "entre", "esa", "ese", "esta", "este",
+    "hacia", "hasta", "la", "las", "le", "lo", "los", "mediante", "más", "menos", "muy", "ni", "o",
+    "para", "por", "que", "se", "según", "sin", "sobre", "su", "sus", "tras", "u", "un", "una",
+    "unas", "unos", "y",
+];
 
 /// Senses that aren't the plain, current, Peninsular meaning.
 const SKIP_TAGS: &[&str] = &[
@@ -79,6 +93,8 @@ struct Sense {
     glosses: Vec<String>,
     #[serde(default)]
     tags: Vec<String>,
+    #[serde(default)]
+    categories: Vec<serde_json::Value>,
 }
 
 /// Spanish definitions for `wanted` (lemma → part of speech, as in the
@@ -108,18 +124,34 @@ pub fn spanish_definitions(
 
 /// The first usable sense among `entries` whose part of speech fits `pos`.
 /// The Spanish Wiktionary lists "y" the letter before "y" the conjunction,
-/// so the part of speech has to match.
+/// so the part of speech has to match. A historical sense ("dinero: Antigua
+/// moneda española…") gives way to a current one when there is one.
 fn definition(entries: &[Entry], pos: &str) -> Option<String> {
-    entries
+    let mut usable = entries
         .iter()
         .filter(|e| same_pos(pos, &e.pos))
         .flat_map(|e| &e.senses)
         .filter(|s| !s.tags.iter().any(|t| SKIP_TAGS.contains(&t.as_str())))
-        .filter_map(|s| s.glosses.last().map(|g| clean(g)))
-        .find(|g| {
+        .filter_map(|s| Some((historical(s), clean(s.glosses.last()?))))
+        .filter(|(_, g)| {
             let lower = g.to_lowercase();
             g.chars().count() >= 3 && !POINTERS.iter().any(|p| lower.starts_with(p))
-        })
+        });
+    let first = usable.next()?;
+    if !first.0 {
+        return Some(first.1);
+    }
+    Some(usable.find(|(old, _)| !old).unwrap_or(first).1)
+}
+
+fn historical(sense: &Sense) -> bool {
+    let gloss = sense.glosses.last().map_or("", String::as_str);
+    gloss.starts_with("Antigua ")
+        || gloss.starts_with("Antiguo ")
+        || sense
+            .categories
+            .iter()
+            .any(|c| c.as_str() == Some("ES:Historia"))
 }
 
 fn same_pos(ours: &str, theirs: &str) -> bool {
@@ -146,13 +178,45 @@ fn clean(gloss: &str) -> String {
     let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
     // the first sentence is the definition; later ones are usage notes
     let s = first_sentence(&s);
-    let s = s.trim_end_matches('.').trim_end();
-    if s.chars().count() <= MAX_CHARS {
+    shorten(s.trim_end_matches('.').trim_end())
+}
+
+/// Cuts a long definition where it reads well: at the last clause break
+/// (a comma, semicolon, colon, dash or bracket) in its second half, or else
+/// after a whole word that doesn't lead into what was cut. A quote or
+/// bracket left open is closed after the "…".
+fn shorten(s: &str) -> String {
+    if s.chars().count() <= MAX_CHARS + SLACK {
         return s.to_string();
     }
-    let cut: String = s.chars().take(MAX_CHARS).collect();
-    let cut = cut.rsplit_once(' ').map_or(cut.as_str(), |(head, _)| head);
-    format!("{}…", cut.trim_end_matches([',', ';', ':']))
+    let head: String = s.chars().take(MAX_CHARS + 1).collect();
+    let mut cut = head
+        .rsplit_once(' ')
+        .map_or(head.as_str(), |(words, _)| words);
+    if let Some(at) = [", ", "; ", ": ", " (", " —"]
+        .iter()
+        .filter_map(|brk| cut.rfind(brk))
+        .max()
+    {
+        if cut[..at].chars().count() >= MAX_CHARS / 2 {
+            cut = &cut[..at];
+        }
+    }
+    loop {
+        cut = cut.trim_end_matches([',', ';', ':', ' ', '(', '—']);
+        match cut.rsplit_once(' ') {
+            Some((words, last)) if DANGLING.contains(&last.to_lowercase().as_str()) => cut = words,
+            _ => break,
+        }
+    }
+    let mut out = format!("{cut}…");
+    if cut.matches('"').count() % 2 == 1 {
+        out.push('"');
+    }
+    if cut.matches('(').count() > cut.matches(')').count() {
+        out.push(')');
+    }
+    out
 }
 
 /// Up to the first ". " or ") " followed by a capital letter: where a new
@@ -232,11 +296,44 @@ mod tests {
             "Señor Sr. de algo. no cortes aquí"
         );
         let long = clean("Existir, hallarse alguien o algo con cierta permanencia y estabilidad en este o aquel lugar, situación o modo.");
-        assert!(
-            long.ends_with('…') && long.chars().count() <= MAX_CHARS + 1,
-            "{long}"
+        assert_eq!(
+            long,
+            "Existir, hallarse alguien o algo con cierta permanencia y estabilidad…"
         );
-        assert!(!long.contains("  "));
+    }
+
+    #[test]
+    fn long_definitions_are_cut_where_they_read_well() {
+        // at the last clause break in the second half
+        assert_eq!(
+            shorten("Expresión de saludo utilizada entre dos o más personas de trato familiar, sin importar el momento del día"),
+            "Expresión de saludo utilizada entre dos o más personas de trato familiar…"
+        );
+        // a bracket or quote the cut leaves open is closed
+        assert_eq!(
+            shorten("Regresar (llegar a un lugar de donde uno se había ido; invertir la dirección en que se venía moviendo)"),
+            "Regresar (llegar a un lugar de donde uno se había ido…)"
+        );
+        assert_eq!(
+            shorten("En comparación implícita o explícita, indica \"mayor cantidad de, exceso, aumento, ventaja o superioridad\""),
+            "En comparación implícita o explícita, indica \"mayor cantidad de, exceso, aumento…\""
+        );
+        // a little over the limit is kept whole
+        let near = "Período de siete días consecutivos que comienza el lunes y termina el domingo, en toda España";
+        assert!(near.chars().count() > MAX_CHARS);
+        assert_eq!(shorten(near), near);
+    }
+
+    #[test]
+    fn a_current_sense_comes_before_a_historical_one() {
+        let dump = r#"{"word":"dinero","lang_code":"es","pos":"noun","senses":[{"glosses":["Antigua moneda española de vellón."],"categories":["ES:Historia","ES:Monedas"]},{"glosses":["Bien que se usa para el pago de otros bienes y servicios."]}]}
+{"word":"alquimia","lang_code":"es","pos":"noun","senses":[{"glosses":["Antigua práctica protocientífica."]}]}"#;
+        let found = defs(dump, &[("dinero", "noun"), ("alquimia", "noun")]);
+        assert_eq!(
+            found["dinero"],
+            "Bien que se usa para el pago de otros bienes y servicios"
+        );
+        assert_eq!(found["alquimia"], "Antigua práctica protocientífica");
     }
 
     #[test]
