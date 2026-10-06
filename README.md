@@ -75,6 +75,10 @@ Hand-made corrections to the data (gloss overrides, homographs) live in
 
 Tests: `cargo test --workspace` and `npm test`.
 
+How the pieces fit together (the app, its two databases, sessions, speech,
+backups and the content pipeline) is described in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ## Data sources & attribution
 
 - Frequency list: [FrequencyWords](https://github.com/hermitdave/FrequencyWords)
