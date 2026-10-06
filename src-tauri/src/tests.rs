@@ -206,6 +206,24 @@ fn srt_import_matches_words_from_content_db() {
     assert_eq!(again, (0, listed.len()));
 }
 
+#[test]
+fn a_sentence_from_another_file_is_not_mined_twice() {
+    let first = "1\n00:00:01,000 --> 00:00:03,000\nNo quiero ir a la escuela hoy.\n\n\
+                 2\n00:00:04,000 --> 00:00:06,000\nMi hermano vive en Madrid con su mujer.\n";
+    // the same lines as another subtitler wrote them, and one new one
+    let second = "1\n00:00:01,000 --> 00:00:03,000\n- No quiero ir a la escuela, hoy...\n\n\
+                  2\n00:00:04,000 --> 00:00:06,000\n¡MI HERMANO vive en Madrid con su mujer!\n\n\
+                  3\n00:00:07,000 --> 00:00:09,000\n¿Dónde está la casa de tu madre?\n";
+    let (added, listed) = with_app(move |app| {
+        srt_import(app.state(), "uno.srt".into(), first.into());
+        let report = srt_import(app.state(), "dos.srt".into(), second.into());
+        (report.sentences_added, sentences_list(app.state()))
+    });
+    assert_eq!(added, 1, "{listed:?}");
+    assert_eq!(listed.len(), 3);
+    assert_eq!(listed[0].es, "¿Dónde está la casa de tu madre?");
+}
+
 fn count(app: &tauri::App<MockRuntime>, table: &str) -> i64 {
     let state = app.state::<AppState>();
     let conn = state.user.lock().unwrap();

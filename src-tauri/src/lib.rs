@@ -615,12 +615,13 @@ fn srt_import(state: tauri::State<AppState>, title: String, text: String) -> Imp
 
     let mut added = 0i64;
     let mut word_freq: HashMap<i64, i64> = HashMap::new();
-    // sentences already mined, from this file or an earlier import of it
+    // sentences already mined, from this file or any earlier import, however
+    // they were punctuated there
     let mut seen: HashSet<String> = conn
         .prepare("SELECT es FROM mined")
         .and_then(|mut stmt| {
             stmt.query_map([], |r| r.get::<_, String>(0))
-                .map(|rows| rows.filter_map(|r| r.ok()).map(|es| es.to_lowercase()).collect())
+                .map(|rows| rows.filter_map(|r| r.ok()).map(|es| tilde_core::srt::sentence_key(&es)).collect())
         })
         .unwrap_or_default();
     for s in &sentences {
@@ -628,8 +629,7 @@ fn srt_import(state: tauri::State<AppState>, title: String, text: String) -> Imp
         if m.coverage < 0.35 {
             continue;
         }
-        let key = s.text.to_lowercase();
-        if !seen.insert(key) {
+        if !seen.insert(tilde_core::srt::sentence_key(&s.text)) {
             continue;
         }
         conn.execute(

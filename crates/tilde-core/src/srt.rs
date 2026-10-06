@@ -309,6 +309,17 @@ pub fn tokenize_es(sentence: &str) -> Vec<String> {
         .collect()
 }
 
+/// What two copies of a sentence share however they're written: its words,
+/// lowercased and without accents, so "¡Vale, vamos!" and "vale... vamos"
+/// from two subtitle files count as one sentence.
+pub fn sentence_key(sentence: &str) -> String {
+    tokenize_es(sentence)
+        .iter()
+        .map(|w| strip_accents(w))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Strip acute accents and diaeresis (keeps ñ).
 pub fn strip_accents(word: &str) -> String {
     word.chars()
@@ -479,6 +490,13 @@ mod tests {
     #[test]
     fn tokenizes_accents() {
         assert_eq!(tokenize_es("¡Mañana ñandú!"), vec!["mañana", "ñandú"]);
+    }
+
+    #[test]
+    fn sentence_keys_ignore_punctuation_case_and_accents() {
+        assert_eq!(sentence_key("¡Vale, vámonos ya!"), sentence_key("vale... vamonos ya"));
+        assert_ne!(sentence_key("Vale, vámonos ya."), sentence_key("Vale, vámonos mañana."));
+        assert_ne!(sentence_key("El año que viene."), sentence_key("El ano que viene."));
     }
 
     #[test]
