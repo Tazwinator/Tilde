@@ -5,7 +5,7 @@ use crate::sentences::Picked;
 use rusqlite::{params, Connection};
 use std::path::Path;
 
-pub const SCHEMA_VERSION: &str = "2";
+pub const SCHEMA_VERSION: &str = "3";
 
 const SCHEMA: &str = "
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -21,7 +21,7 @@ CREATE TABLE words(
   register TEXT  -- 'vulgar' when every sense is vulgar
 );
 CREATE UNIQUE INDEX idx_words_rank ON words(rank);
-CREATE INDEX idx_words_lemma ON words(lemma COLLATE NOCASE);
+CREATE UNIQUE INDEX idx_words_lemma ON words(lemma COLLATE NOCASE);
 CREATE TABLE forms(
   form TEXT NOT NULL,
   word_id INTEGER NOT NULL REFERENCES words(id),
@@ -48,22 +48,50 @@ CREATE INDEX idx_sentence_links_word ON sentence_links(word_id);
 ";
 
 /// Writes the database next to `out` and renames it into place once complete.
-/// Word ids equal frequency rank (1 = most common).
+/// `words` are in frequency order, so `rank` is the position (1 = most
+/// common); `ids[i]` is the stable id of `words[i]` (see `ids.rs`), which is
+/// what forms, conjugations and sentence links refer to.
 pub fn write(
     out: &Path,
     words: &[Lemma],
+    ids: &[i64],
     sentences: &[Picked],
     meta: &[(&str, String)],
 ) -> Result<(), String> {
+    if ids.len() != words.len() {
+        return Err(format!("{} ids for {} words", ids.len(), words.len()));
+    }
     let tmp = out.with_extension("db.tmp");
     let _ = std::fs::remove_file(&tmp);
-    build(&tmp, words, sentences, meta).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+    build(&tmp, words, ids, sentences, meta)
+        .map_err(|e| format!("write {}: {e}", tmp.display()))?;
     std::fs::rename(&tmp, out).map_err(|e| format!("rename to {}: {e}", out.display()))
+}
+
+/// The word list of an existing content database (empty if there's none at
+/// `path`), for the report of what a rebuild changes.
+pub fn read_words(path: &Path) -> rusqlite::Result<Vec<crate::ids::Listed>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let mut stmt =
+        conn.prepare("SELECT lemma, id, rank, COALESCE(gloss_en, '') FROM words ORDER BY rank")?;
+    let rows = stmt.query_map([], |r| {
+        Ok(crate::ids::Listed {
+            lemma: r.get(0)?,
+            id: r.get(1)?,
+            rank: r.get(2)?,
+            gloss: r.get(3)?,
+        })
+    })?;
+    rows.collect()
 }
 
 fn build(
     path: &Path,
     words: &[Lemma],
+    ids: &[i64],
     sentences: &[Picked],
     meta: &[(&str, String)],
 ) -> rusqlite::Result<()> {
@@ -75,17 +103,17 @@ fn build(
         {
             let mut word = tx.prepare(
                 "INSERT INTO words(id, lemma, pos, rank, gloss_en, gloss_es, region, register)
-                 VALUES (?1, ?2, ?3, ?1, ?4, ?5, ?6, ?7)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             )?;
             let mut form =
                 tx.prepare("INSERT OR IGNORE INTO forms(form, word_id, tag) VALUES (?1, ?2, ?3)")?;
             let mut conj = tx.prepare(
                 "INSERT INTO conjugations(word_id, tense, person, form) VALUES (?1, ?2, ?3, ?4)",
             )?;
-            for (i, w) in words.iter().enumerate() {
-                let id = i as i64 + 1;
+            for (i, (w, id)) in words.iter().zip(ids).enumerate() {
+                let rank = i as i64 + 1;
                 word.execute(params![
-                    id, w.lemma, w.pos, w.gloss, w.gloss_es, w.region, w.register
+                    id, w.lemma, w.pos, rank, w.gloss, w.gloss_es, w.region, w.register
                 ])?;
                 for (f, tag) in &w.forms {
                     form.execute(params![f, id, tag])?;
@@ -117,4 +145,73 @@ fn build(
         conn.execute_batch("PRAGMA journal_mode=DELETE; VACUUM;")?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lemma(word: &str) -> Lemma {
+        Lemma {
+            lemma: word.to_string(),
+            pos: "noun".to_string(),
+            gloss: "gloss".to_string(),
+            gloss_es: None,
+            region: None,
+            register: None,
+            forms: vec![(word.to_string(), String::new())],
+            conjugations: Vec::new(),
+        }
+    }
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("tilde_pipeline_{}_{name}.db", std::process::id()))
+    }
+
+    #[test]
+    fn write_uses_given_ids_not_positions() {
+        let out = scratch("ids");
+        let words = [lemma("casa"), lemma("perro")];
+        let picked = [Picked {
+            es: "El perro duerme.".into(),
+            en: "The dog sleeps.".into(),
+            word_ids: vec![3],
+        }];
+        write(&out, &words, &[7, 3], &picked, &[]).unwrap();
+
+        let conn = Connection::open(&out).unwrap();
+        let rows = |sql: &str| -> Vec<(String, i64)> {
+            let mut stmt = conn.prepare(sql).unwrap();
+            let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+            rows.map(|r| r.unwrap()).collect()
+        };
+        assert_eq!(
+            rows("SELECT lemma, id * 100 + rank FROM words ORDER BY rank"),
+            [("casa".to_string(), 701), ("perro".to_string(), 302)]
+        );
+        assert_eq!(
+            rows("SELECT form, word_id FROM forms ORDER BY form"),
+            [("casa".to_string(), 7), ("perro".to_string(), 3)]
+        );
+        assert_eq!(
+            rows("SELECT es, word_id FROM sentences JOIN sentence_links ON sentence_id = id"),
+            [("El perro duerme.".to_string(), 3)]
+        );
+        assert_eq!(
+            rows("SELECT value, 0 FROM meta WHERE key = 'version'"),
+            [("3".to_string(), 0)]
+        );
+        drop(conn);
+        let _ = std::fs::remove_file(&out);
+    }
+
+    #[test]
+    fn write_rejects_mismatched_ids_and_duplicate_lemmas() {
+        let out = scratch("bad");
+        assert!(write(&out, &[lemma("casa")], &[1, 2], &[], &[]).is_err());
+        // the registry is keyed by lemma, so two rows for one lemma can't be allowed
+        assert!(write(&out, &[lemma("casa"), lemma("Casa")], &[1, 2], &[], &[]).is_err());
+        assert!(!out.exists());
+        let _ = std::fs::remove_file(out.with_extension("db.tmp"));
+    }
 }

@@ -3,9 +3,14 @@
 //!
 //! Usage: cargo run --release -p tilde-pipeline [--out path] [--data-dir dir]
 //! Downloads are cached in the data dir (default: `data/` at the repo root).
+//!
+//! A build to the default path also records the ids of new lemmas in
+//! `curation/word_ids.tsv`; commit that file together with the database.
+//! With `--out` (a trial build) the registry is read but left alone.
 
 mod db;
 mod definiciones;
+mod ids;
 mod lexicon;
 mod sentences;
 mod sources;
@@ -28,21 +33,27 @@ CC BY 2.0 FR. This word database is shared under CC BY-SA 4.0 \
 struct Args {
     out: PathBuf,
     data: PathBuf,
+    /// Building somewhere other than the committed database.
+    trial: bool,
 }
 
 fn parse_args() -> Args {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut out = root.join("src-tauri/resources/content.db");
     let mut data = root.join("data");
+    let mut trial = false;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
-            "--out" => out = it.next().map(PathBuf::from).unwrap_or(out),
+            "--out" => {
+                out = it.next().map(PathBuf::from).unwrap_or(out);
+                trial = true;
+            }
             "--data-dir" => data = it.next().map(PathBuf::from).unwrap_or(data),
             other => eprintln!("unknown arg {other}"),
         }
     }
-    Args { out, data }
+    Args { out, data, trial }
 }
 
 fn gz(path: &Path) -> BufReader<flate2::read::GzDecoder<std::fs::File>> {
@@ -79,6 +90,13 @@ fn main() {
     if let Some(parent) = args.out.parent() {
         std::fs::create_dir_all(parent).expect("create output dir");
     }
+
+    // read first: without the registry every word would get a new id
+    let registry_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("curation/word_ids.tsv");
+    let mut registry = ids::Registry::load(&registry_path).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
 
     println!("[1/5] sources");
     let fetch = |s: &sources::Source| {
@@ -161,11 +179,12 @@ fn main() {
 
     println!("[5/5] example sentences");
     let pairs = sentences::load_tatoeba(&tatoeba_path);
+    let word_ids = registry.assign(words.iter().map(|w| w.lemma.as_str()));
     let linker = sentences::Linker::new(
         words
             .iter()
-            .enumerate()
-            .flat_map(|(i, w)| w.forms.iter().map(move |(f, _)| (f.as_str(), i as i64 + 1))),
+            .zip(&word_ids)
+            .flat_map(|(w, id)| w.forms.iter().map(move |(f, _)| (f.as_str(), *id))),
     );
     let picked = sentences::pick(&pairs, &linker);
     let with_examples: HashSet<i64> = picked
@@ -190,11 +209,40 @@ fn main() {
         ("sha256_wikcionario", wikcionario_sha),
         ("sha256_tatoeba", tatoeba_sha),
     ];
-    db::write(&args.out, &words, &picked, &meta).unwrap_or_else(|e| {
+    // what the committed database had, to report what this build changes
+    let committed =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/resources/content.db");
+    let before = db::read_words(&committed).unwrap_or_default();
+    db::write(&args.out, &words, &word_ids, &picked, &meta).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
     });
     println!("wrote {}", args.out.display());
+
+    let after: Vec<ids::Listed> = words
+        .iter()
+        .zip(&word_ids)
+        .enumerate()
+        .map(|(i, (w, id))| ids::Listed {
+            lemma: w.lemma.clone(),
+            id: *id,
+            rank: i as i64 + 1,
+            gloss: w.gloss.clone(),
+        })
+        .collect();
+    print!("{}", ids::report(&before, &after));
+    if args.trial {
+        println!("trial build: curation/word_ids.tsv left as it was");
+    } else {
+        registry.save(&registry_path).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
+        println!(
+            "updated {}; commit it with the database",
+            registry_path.display()
+        );
+    }
 }
 
 /// Seconds since the Unix epoch (avoids a date-time dependency for one field).
