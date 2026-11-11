@@ -38,7 +38,7 @@ fn generates_every_session_kind() {
     let user = user_db("kinds");
     let tts = Tts::off(&std::env::temp_dir());
     // something due, so ReviewOnly has a card to show
-    deck::introduce(&user, content.new_candidates(1, 1, &Default::default())[0].word_id);
+    deck::introduce(&user, content.new_candidates(1, 1, &Default::default())[0].word_id).unwrap();
     for kind in [
         tilde_core::types::SessionKind::Quick,
         tilde_core::types::SessionKind::Standard,
@@ -69,7 +69,7 @@ fn full_session_lifecycle() {
             correct: true,
         })
         .collect();
-    let result = session::placement_result(&user, &content, &answers);
+    let result = session::placement_result(&user, &content, &answers).unwrap();
     assert!(result.frontier_rank > 0);
     assert!(result.words_marked_known > 0);
 
@@ -89,7 +89,7 @@ fn full_session_lifecycle() {
         if *ty == "new_word" {
             continue;
         }
-        let feedback = session::score_round(&user, ty, true, Some(3), &mut combo, &mut best, &mut xp);
+        let feedback = session::score_round(&user, ty, true, Some(3), &mut combo, &mut best, &mut xp).unwrap();
         assert!(feedback.xp_gained > 0);
         assert!(
             session::correct_answer_of(round).is_some() || matches!(*ty, "match" | "review_card"),

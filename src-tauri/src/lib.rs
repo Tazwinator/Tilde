@@ -13,13 +13,13 @@ use rusqlite::Connection;
 use session::{Session};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use tauri::Manager;
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tilde_core::types::{
-    BackupFolder, Badge, Profile, Round, RoundFeedback, RoundResult, SessionKind, SessionStart, SessionSummary, Settings, WordHit,
+    BackupFolder, BackupInfo, BackupProblem, Badge, Profile, Round, RoundFeedback, RoundResult, SessionKind, SessionStart, SessionSummary, Settings, WordHit,
     TtsInfo, WordDetail, ExSentence, CardStateInfo, ImportReport, MinedSentence,
     PlacementAnswer, PlacementItem, PlacementResult, StatsData, SeriesPoint,
 };
@@ -27,6 +27,7 @@ use tilde_core::types::{
 // Every command is `#[tauri::command(async)]`: it runs on Tauri's thread
 // pool, so a slow one (TTS, a big subtitle file, a backup) never freezes the
 // window. Locks are always taken in the order sessions → user → content.
+// `backup_error` is a leaf: held for a moment, never while taking another.
 pub struct AppState {
     pub content: Mutex<ContentDb>,
     pub user: Mutex<Connection>,
@@ -34,6 +35,42 @@ pub struct AppState {
     pub app_dir: PathBuf,
     pub sessions: Mutex<HashMap<i64, Session>>,
     pub next_session: AtomicI64,
+    /// Why the latest automatic backup failed, until a write into the backup
+    /// folder works again. In memory only: the next session end sets it anew.
+    pub backup_error: Mutex<Option<BackupProblem>>,
+}
+
+impl AppState {
+    pub fn new(content: ContentDb, user: Connection, tts: tts::Tts, app_dir: PathBuf) -> AppState {
+        AppState {
+            content: Mutex::new(content),
+            user: Mutex::new(user),
+            tts: Arc::new(tts),
+            app_dir,
+            sessions: Mutex::new(HashMap::new()),
+            next_session: AtomicI64::new(1),
+            backup_error: Mutex::new(None),
+        }
+    }
+
+    /// A backup into the current folder worked, so whatever stopped the last
+    /// automatic one is over.
+    fn backup_worked(&self) {
+        *self.backup_error.locked() = None;
+    }
+
+    /// An automatic backup failed. Nobody asked for it, so nobody is waiting
+    /// for an answer: keep the reason for Settings to show.
+    fn backup_failed(&self, message: String) {
+        eprintln!("automatic backup failed: {message}");
+        *self.backup_error.locked() = Some(BackupProblem { message, at: deck::now() as i64 });
+    }
+
+    fn backup_folder(&self) -> BackupFolder {
+        let mut folder = backup::describe(&self.app_dir);
+        folder.last_error = self.backup_error.locked().clone();
+        folder
+    }
 }
 
 /// `Mutex::lock` that shrugs off poisoning. A command that panics while
@@ -218,7 +255,7 @@ fn round_submit(
     session_id: i64,
     round_id: i64,
     result: RoundResult,
-) -> RoundFeedback {
+) -> Result<RoundFeedback, String> {
     let neutral = |combo| RoundFeedback {
         correct_answer: None,
         xp_gained: 0,
@@ -229,16 +266,45 @@ fn round_submit(
     let mut sessions = state.sessions.locked();
     // Gone after a restore or reset, or already finished: nothing to grade.
     let Some(session) = sessions.get_mut(&session_id) else {
-        return neutral(0);
+        return Ok(neutral(0));
     };
     let index = match session.rounds.get(result.round_index) {
         Some(r) if match_round_id(r) == round_id => Some(result.round_index),
         _ => session.rounds.iter().position(|r| match_round_id(r) == round_id),
     };
     // A double Enter or a late click must not grade the same round twice.
-    let Some(index) = index.filter(|i| session.answered.insert(*i)) else {
-        return neutral(session.combo);
+    let Some(index) = index.filter(|i| !session.answered.contains(i)) else {
+        return Ok(neutral(session.combo));
     };
+    let before = session.mark();
+    let mut user = state.user.locked();
+    let graded = db::in_transaction(&mut user, |tx| grade_round(tx, session, session_id, index, &result));
+    match graded {
+        // Answered only now that it is saved...
+        Ok(feedback) => {
+            session.answered.insert(index);
+            Ok(feedback)
+        }
+        // ...and if it wasn't, nothing of it stays in memory either, so the
+        // player can answer the round again and have it count.
+        Err(e) => {
+            session.rewind(before);
+            Err(db::user_error(&e))
+        }
+    }
+}
+
+/// Grades one round: schedules its cards, scores it and logs it. Every write
+/// goes through `tx`, the caller's transaction, so a round is saved whole or
+/// not at all; on an error `session` may have changed part-way, and the
+/// caller rewinds it.
+fn grade_round(
+    tx: &Connection,
+    session: &mut Session,
+    session_id: i64,
+    index: usize,
+    result: &RoundResult,
+) -> rusqlite::Result<RoundFeedback> {
     let round = session.rounds[index].clone();
     let round_type = session.round_types.get(index).copied().unwrap_or("choice");
     let correct = result.correct;
@@ -251,7 +317,6 @@ fn round_submit(
     }
 
     // schedule the card
-    let user = state.user.locked();
     if let Some(wid) = match &round {
         Round::Choice { word_id, .. }
         | Round::Listen { word_id, .. }
@@ -269,12 +334,12 @@ fn round_submit(
         } else {
             1
         };
-        deck::grade(&user, wid, grade);
+        deck::grade(tx, wid, grade)?;
     }
 
     // a new word joins the deck once its intro has actually been seen
     if let Round::NewWord { word, .. } = &round {
-        deck::introduce(&user, word.word_id);
+        deck::introduce(tx, word.word_id)?;
         session.new_words.push(word.lemma.clone());
     }
 
@@ -282,42 +347,41 @@ fn round_submit(
     if let Round::Match { pairs, .. } = &round {
         for p in pairs {
             let missed = result.missed_word_ids.contains(&p.word_id);
-            deck::grade(&user, p.word_id, if missed { 1 } else { 3 });
+            deck::grade(tx, p.word_id, if missed { 1 } else { 3 })?;
         }
     }
 
-    let xp_before = total_xp(&user);
+    let xp_before = total_xp(tx);
     let mut outcome = session::score_round(
-        &user,
+        tx,
         round_type,
         correct,
         quality,
         &mut session.combo,
         &mut session.best_combo,
         &mut session.xp,
-    );
-    save_session_event(&user, session);
-    user.execute(
+    )?;
+    save_session_event(tx, session)?;
+    tx.execute(
         "INSERT INTO round_log(ts, session_id, round_type, correct) VALUES (?1, ?2, ?3, ?4)",
         rusqlite::params![deck::now() as i64, session_id, round_type, i64::from(correct)],
-    )
-    .ok();
-    if session::award_badge(&user, "first-session") {
+    )?;
+    if session::award_badge(tx, "first-session")? {
         outcome.new_badges.push(session::find_badge("first-session"));
     }
-    RoundFeedback {
+    Ok(RoundFeedback {
         correct_answer: session::correct_answer_of(&round),
         xp_gained: outcome.xp_gained,
         combo: outcome.combo,
-        level_up: session::level_up(xp_before, total_xp(&user)),
+        level_up: session::level_up(xp_before, total_xp(tx)),
         new_badges: std::mem::take(&mut outcome.new_badges),
-    }
+    })
 }
 
 /// Writes the session's running totals to its `events` row, creating the row
 /// on the first answer, so XP and minutes count even if the session is never
 /// finished (the app closed, or the player just walked away).
-fn save_session_event(conn: &Connection, session: &mut Session) {
+fn save_session_event(conn: &Connection, session: &mut Session) -> rusqlite::Result<()> {
     let kind_label = match session.kind {
         SessionKind::Sidecar => "sidecar",
         _ => "session",
@@ -334,19 +398,17 @@ fn save_session_event(conn: &Connection, session: &mut Session) {
             conn.execute(
                 "UPDATE events SET ts = ?1, xp = ?2, duration_s = ?3, meta = ?4 WHERE id = ?5",
                 rusqlite::params![now as i64, session.xp, duration_s, meta, id],
-            )
-            .ok();
+            )?;
         }
         None => {
-            let inserted = conn.execute(
+            conn.execute(
                 "INSERT INTO events(ts, kind, xp, duration_s, meta) VALUES (?1, ?2, ?3, ?4, ?5)",
                 rusqlite::params![now as i64, kind_label, session.xp, duration_s, meta],
-            );
-            if inserted.is_ok() {
-                session.event_id = Some(conn.last_insert_rowid());
-            }
+            )?;
+            session.event_id = Some(conn.last_insert_rowid());
         }
     }
+    Ok(())
 }
 
 fn match_round_id(r: &Round) -> i64 {
@@ -381,11 +443,17 @@ fn session_finish(state: tauri::State<AppState>, session_id: i64) -> SessionSumm
     };
     let user = state.user.locked();
     if session.event_id.is_some() {
-        save_session_event(&user, &mut session);
+        // Only the last few seconds of the session's length ride on this:
+        // its XP was saved round by round. Not worth failing the summary for.
+        if let Err(e) = save_session_event(&user, &mut session) {
+            eprintln!("could not update the session's length: {e}");
+        }
     }
     let words_known = deck::counts(&user).2;
 
-    // badge checks
+    // badge checks. No transaction here: a badge that can't be written just
+    // isn't earned yet, and is checked for again when the next session ends.
+    let award = |id: &str| session::award_badge(&user, id).unwrap_or(false);
     let mut badges = Vec::new();
     let sessions_total: i64 = user
         .query_row(
@@ -409,7 +477,7 @@ fn session_finish(state: tauri::State<AppState>, session_id: i64) -> SessionSumm
         (minutes_total >= 900, "minutes-900"),
         (minutes_total >= 1800, "minutes-1800"),
     ] {
-        if cond && session::award_badge(&user, id) {
+        if cond && award(id) {
             badges.push(session::find_badge(id));
         }
     }
@@ -422,7 +490,7 @@ fn session_finish(state: tauri::State<AppState>, session_id: i64) -> SessionSumm
             |r| r.get(0),
         )
         .unwrap_or(0);
-    if days_since >= 7 && session::award_badge(&user, "return-trip") {
+    if days_since >= 7 && award("return-trip") {
         badges.push(session::find_badge("return-trip"));
     }
     // skill counters
@@ -433,7 +501,7 @@ fn session_finish(state: tauri::State<AppState>, session_id: i64) -> SessionSumm
             |r| r.get(0),
         )
         .unwrap_or(0);
-    if conjugation_correct >= 100 && session::award_badge(&user, "conjugation-master") {
+    if conjugation_correct >= 100 && award("conjugation-master") {
         badges.push(session::find_badge("conjugation-master"));
     }
     let listening_correct: i64 = user
@@ -443,7 +511,7 @@ fn session_finish(state: tauri::State<AppState>, session_id: i64) -> SessionSumm
             |r| r.get(0),
         )
         .unwrap_or(0);
-    if listening_correct >= 200 && session::award_badge(&user, "listener") {
+    if listening_correct >= 200 && award("listener") {
         badges.push(session::find_badge("listener"));
     }
     let sidecar_minutes: i64 = user
@@ -453,7 +521,7 @@ fn session_finish(state: tauri::State<AppState>, session_id: i64) -> SessionSumm
             |r| r.get(0),
         )
         .unwrap_or(0);
-    if sidecar_minutes >= 60 && session::award_badge(&user, "sidecar-hour") {
+    if sidecar_minutes >= 60 && award("sidecar-hour") {
         badges.push(session::find_badge("sidecar-hour"));
     }
     // the session's XP is already in the total; compare with where it started
@@ -461,8 +529,9 @@ fn session_finish(state: tauri::State<AppState>, session_id: i64) -> SessionSumm
     let level_up = session::level_up(total - session.xp, total);
     let summary = session::session_summary(&user, &session, level_up, badges);
     if session.total_graded > 0 {
-        if let Err(e) = backup::write(&user, &backup::folder(&state.app_dir), backup::Kind::Auto) {
-            eprintln!("automatic backup failed: {e}");
+        match backup::write(&user, &backup::folder(&state.app_dir), backup::Kind::Auto) {
+            Ok(_) => state.backup_worked(),
+            Err(e) => state.backup_failed(e),
         }
     }
     summary
@@ -487,17 +556,17 @@ fn placement_start(state: tauri::State<AppState>) -> Vec<PlacementItem> {
 fn placement_submit(
     state: tauri::State<AppState>,
     answers: Vec<PlacementAnswer>,
-) -> PlacementResult {
-    let conn = state.user.locked();
-    let result = {
-        let content = state.content.locked();
-        session::placement_result(&conn, &content, &answers)
-    };
-    db::set_setting(&conn, "placement", &serde_json::to_string(&result).unwrap());
-    if session::award_badge(&conn, "first-session") {
-        // placement alone doesn't earn a badge; ignore
-    }
-    result
+) -> Result<PlacementResult, String> {
+    let mut conn = state.user.locked();
+    let content = state.content.locked();
+    db::in_transaction(&mut conn, |tx| {
+        let result = session::placement_result(tx, &content, &answers)?;
+        db::set_setting(tx, "placement", &serde_json::to_string(&result).unwrap())?;
+        // awarded without a word: placement alone isn't worth announcing
+        session::award_badge(tx, "first-session")?;
+        Ok(result)
+    })
+    .map_err(|e| db::user_error(&e))
 }
 
 // --- words ---
@@ -571,15 +640,15 @@ fn word_detail(state: tauri::State<AppState>, word_id: i64) -> Option<WordDetail
 }
 
 #[tauri::command(async)]
-fn word_mark_known(state: tauri::State<AppState>, word_id: i64) {
+fn word_mark_known(state: tauri::State<AppState>, word_id: i64) -> Result<(), String> {
     let conn = state.user.locked();
-    deck::mark_known(&conn, word_id);
+    deck::mark_known(&conn, word_id).map_err(|e| db::user_error(&e))
 }
 
 #[tauri::command(async)]
-fn word_reset(state: tauri::State<AppState>, word_id: i64) {
+fn word_reset(state: tauri::State<AppState>, word_id: i64) -> Result<(), String> {
     let conn = state.user.locked();
-    deck::reset(&conn, word_id);
+    deck::reset(&conn, word_id).map_err(|e| db::user_error(&e))
 }
 
 // --- tts ---
@@ -606,12 +675,12 @@ fn content_credits(state: tauri::State<AppState>) -> String {
 // --- sentence mining ---
 
 #[tauri::command(async)]
-fn srt_import(state: tauri::State<AppState>, title: String, text: String) -> ImportReport {
+fn srt_import(state: tauri::State<AppState>, title: String, text: String) -> Result<ImportReport, String> {
     let lines = tilde_core::srt::parse_subtitles(&text);
     let sentences = tilde_core::srt::lines_to_sentences(&lines);
 
     let matcher = state.content.locked().form_index();
-    let conn = state.user.locked();
+    let mut conn = state.user.locked();
 
     let mut added = 0i64;
     let mut word_freq: HashMap<i64, i64> = HashMap::new();
@@ -624,42 +693,47 @@ fn srt_import(state: tauri::State<AppState>, title: String, text: String) -> Imp
                 .map(|rows| rows.filter_map(|r| r.ok()).map(|es| tilde_core::srt::sentence_key(&es)).collect())
         })
         .unwrap_or_default();
-    for s in &sentences {
-        let m = tilde_core::srt::match_sentence(&s.text, &matcher);
-        if m.coverage < 0.35 {
-            continue;
-        }
-        if !seen.insert(tilde_core::srt::sentence_key(&s.text)) {
-            continue;
-        }
-        conn.execute(
-            "INSERT INTO mined(es, en, source, created_at, in_deck) VALUES (?1, NULL, ?2, ?3, 0)",
-            rusqlite::params![s.text, title, deck::now() as i64],
-        )
-        .ok();
-        let mid = conn.last_insert_rowid();
-        for mw in &m.words {
-            for wid in &mw.word_ids {
-                *word_freq.entry(*wid).or_insert(0) += 1;
-                conn.execute(
-                    "INSERT OR IGNORE INTO mined_words(mined_id, word_id) VALUES (?1, ?2)",
-                    rusqlite::params![mid, wid],
-                )
-                .ok();
+    // The whole file or none of it: a write that fails part-way must not
+    // leave some sentences in, or a sentence without its words.
+    db::in_transaction(&mut conn, |tx| {
+        for s in &sentences {
+            let m = tilde_core::srt::match_sentence(&s.text, &matcher);
+            if m.coverage < 0.35 {
+                continue;
+            }
+            if !seen.insert(tilde_core::srt::sentence_key(&s.text)) {
+                continue;
+            }
+            tx.execute(
+                "INSERT INTO mined(es, en, source, created_at, in_deck) VALUES (?1, NULL, ?2, ?3, 0)",
+                rusqlite::params![s.text, title, deck::now() as i64],
+            )?;
+            let mid = tx.last_insert_rowid();
+            added += 1;
+            for mw in &m.words {
+                for wid in &mw.word_ids {
+                    *word_freq.entry(*wid).or_insert(0) += 1;
+                    tx.execute(
+                        "INSERT OR IGNORE INTO mined_words(mined_id, word_id) VALUES (?1, ?2)",
+                        rusqlite::params![mid, wid],
+                    )?;
+                }
             }
         }
-        added += 1;
-    }
 
-    if added > 0 && session::award_badge(&conn, "first-mined") {
-        // badge awarded; surfaced on next profile refresh
-    }
-    let mined_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM mined", [], |r| r.get(0))
-        .unwrap_or(0);
-    if mined_count >= 50 && session::award_badge(&conn, "mined-50") {
-        // badge awarded
-    }
+        // badges earned here are surfaced on the next profile refresh
+        if added > 0 {
+            session::award_badge(tx, "first-mined")?;
+        }
+        let mined_count: i64 = tx
+            .query_row("SELECT COUNT(*) FROM mined", [], |r| r.get(0))
+            .unwrap_or(0);
+        if mined_count >= 50 {
+            session::award_badge(tx, "mined-50")?;
+        }
+        Ok(())
+    })
+    .map_err(|e| db::user_error(&e))?;
     drop(conn);
 
     let mut top: Vec<(i64, i64)> = word_freq.into_iter().collect();
@@ -673,13 +747,13 @@ fn srt_import(state: tauri::State<AppState>, title: String, text: String) -> Imp
         top_cards.iter().map(|w| hit(&conn, w)).collect()
     };
 
-    ImportReport {
+    Ok(ImportReport {
         file_title: title,
         sentences_found: sentences.len() as i64,
         sentences_added: added,
         words_matched: top.len() as i64,
         top_words,
-    }
+    })
 }
 
 #[tauri::command(async)]
@@ -703,20 +777,20 @@ fn sentences_list(state: tauri::State<AppState>) -> Vec<MinedSentence> {
 }
 
 #[tauri::command(async)]
-fn sentence_add_to_deck(state: tauri::State<AppState>, id: i64) {
-    let conn = state.user.locked();
-    conn.execute("UPDATE mined SET in_deck = 1 WHERE id = ?1", [id])
-        .ok();
-    let mut stmt = conn
-        .prepare("SELECT word_id FROM mined_words WHERE mined_id = ?1")
-        .unwrap();
-    let word_ids: Vec<i64> = stmt
-        .query_map([id], |r| r.get(0))
-        .map(|rows| rows.filter_map(|r| r.ok()).collect())
-        .unwrap_or_default();
-    for wid in word_ids {
-        deck::introduce(&conn, wid);
-    }
+fn sentence_add_to_deck(state: tauri::State<AppState>, id: i64) -> Result<(), String> {
+    let mut conn = state.user.locked();
+    db::in_transaction(&mut conn, |tx| {
+        tx.execute("UPDATE mined SET in_deck = 1 WHERE id = ?1", [id])?;
+        let word_ids: Vec<i64> = tx
+            .prepare("SELECT word_id FROM mined_words WHERE mined_id = ?1")?
+            .query_map([id], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        for wid in word_ids {
+            deck::introduce(tx, wid)?;
+        }
+        Ok(())
+    })
+    .map_err(|e| db::user_error(&e))
 }
 
 // --- stats ---
@@ -836,15 +910,17 @@ fn settings_get(state: tauri::State<AppState>) -> Settings {
     settings(&state.user.locked())
 }
 
+/// Returns the settings as stored, which is what the form should show.
 #[tauri::command(async)]
-fn settings_set(state: tauri::State<AppState>, settings: Settings) -> Settings {
-    {
-        let conn = state.user.locked();
-        db::set_setting(&conn, "definition_lang", &settings.definition_lang);
-        db::set_setting(&conn, "session_length", &settings.session_length);
-        db::set_setting(&conn, "sound_enabled", if settings.sound_enabled { "1" } else { "0" });
-    }
-    settings
+fn settings_set(state: tauri::State<AppState>, settings: Settings) -> Result<Settings, String> {
+    let mut conn = state.user.locked();
+    db::in_transaction(&mut conn, |tx| {
+        db::set_setting(tx, "definition_lang", &settings.definition_lang)?;
+        db::set_setting(tx, "session_length", &settings.session_length)?;
+        db::set_setting(tx, "sound_enabled", if settings.sound_enabled { "1" } else { "0" })
+    })
+    .map_err(|e| db::user_error(&e))?;
+    Ok(self::settings(&conn))
 }
 
 #[tauri::command(async)]
@@ -871,33 +947,37 @@ fn badges_list(state: tauri::State<AppState>) -> Vec<Badge> {
         .collect()
 }
 
-fn user_db_path(app_dir: &std::path::Path) -> PathBuf {
-    app_dir.join("tilde_user.db")
+fn user_db_path(app_dir: &Path) -> PathBuf {
+    app_dir.join(db::FILE_NAME)
 }
 
 #[tauri::command(async)]
 fn backup_folder(state: tauri::State<AppState>) -> BackupFolder {
-    backup::describe(&state.app_dir)
+    state.backup_folder()
 }
 
 /// `dir: None` goes back to the default folder inside the app's data dir.
 #[tauri::command(async)]
 fn backup_folder_set(state: tauri::State<AppState>, dir: Option<String>) -> Result<BackupFolder, String> {
     let dir = backup::set_folder(&state.app_dir, dir.as_deref())?;
+    // whatever went wrong was about the old folder
+    state.backup_worked();
     // Start the new folder off with today's progress rather than waiting for
     // the next session, so a freshly synced folder is useful straight away.
     let conn = state.user.locked();
     if let Err(e) = backup::write(&conn, &dir, backup::Kind::Auto) {
-        eprintln!("snapshot into the new backup folder failed: {e}");
+        state.backup_failed(e);
     }
-    Ok(backup::describe(&state.app_dir))
+    drop(conn);
+    Ok(state.backup_folder())
 }
 
 #[tauri::command(async)]
 fn backup_export(state: tauri::State<AppState>) -> Result<String, String> {
     let conn = state.user.locked();
-    backup::write(&conn, &backup::folder(&state.app_dir), backup::Kind::Manual)
-        .map(|p| p.to_string_lossy().into_owned())
+    let path = backup::write(&conn, &backup::folder(&state.app_dir), backup::Kind::Manual)?;
+    state.backup_worked();
+    Ok(path.to_string_lossy().into_owned())
 }
 
 fn restore_from(state: &AppState, bytes: &[u8]) -> Result<(), String> {
@@ -910,6 +990,8 @@ fn restore_from(state: &AppState, bytes: &[u8]) -> Result<(), String> {
         bytes,
         &backup::folder(&state.app_dir),
     )?;
+    // the safety copy went into the backup folder
+    state.backup_worked();
     Ok(())
 }
 
@@ -931,14 +1013,16 @@ fn progress_reset(state: tauri::State<AppState>) -> Result<(), String> {
     let mut conn = state.user.locked();
     backup::write(&conn, &backup::folder(&state.app_dir), backup::Kind::BeforeReset)
         .map_err(|e| format!("No se pudo guardar una copia antes de reiniciar: {e}"))?;
+    state.backup_worked();
     // One transaction, children before parents (mined_words references mined),
     // so a failure leaves everything as it was rather than half-deleted.
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    for table in ["mined_words", "mined", "cards", "reviews", "round_log", "events", "badges", "settings"] {
-        tx.execute(&format!("DELETE FROM {table}"), [])
-            .map_err(|e| e.to_string())?;
-    }
-    tx.commit().map_err(|e| e.to_string())
+    db::in_transaction(&mut conn, |tx| {
+        for table in ["mined_words", "mined", "cards", "reviews", "round_log", "events", "badges", "settings"] {
+            tx.execute(&format!("DELETE FROM {table}"), [])?;
+        }
+        Ok(())
+    })
+    .map_err(|e| db::user_error(&e))
 }
 
 // ---------------------------------------------------------------------------
@@ -968,6 +1052,81 @@ fn resolve_content_db(app: &tauri::AppHandle) -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("resources/content.db"))
 }
 
+/// The progress database as startup leaves it.
+struct Opened {
+    conn: Connection,
+    /// Where the damaged database went, if there was one.
+    set_aside: Option<PathBuf>,
+    /// The backup that then took its place, if one could.
+    recovered: Option<BackupInfo>,
+}
+
+/// Opens the player's progress. A damaged database is set aside and the
+/// newest backup recovered in its place straight away, not left for the
+/// player to restore later: every session played on the empty database in
+/// between would push an automatic backup of real progress out of the
+/// newest `KEEP_AUTO`.
+fn open_progress(app_dir: &Path) -> Result<Opened, String> {
+    let (mut conn, set_aside) = db::open_or_set_aside(&user_db_path(app_dir))?;
+    let recovered = match set_aside {
+        Some(_) => backup::recover_newest(&mut conn, &backup::folder(app_dir)),
+        None => None,
+    };
+    Ok(Opened { conn, set_aside, recovered })
+}
+
+/// What to tell the player after their progress was set aside at startup.
+fn set_aside_message(aside: &Path, recovered: Option<&BackupInfo>) -> String {
+    let kept = format!(
+        "Tu progreso estaba dañado y no se podía leer. Lo hemos guardado aparte, sin borrar nada:\n{}",
+        aside.display()
+    );
+    match recovered {
+        Some(backup) => {
+            let when = chrono::DateTime::from_timestamp(backup.created_at, 0)
+                .map(|t| t.with_timezone(&chrono::Local).format("%d/%m/%Y %H:%M").to_string())
+                .unwrap_or_default();
+            format!("{kept}\n\nHemos recuperado tu copia de seguridad del {when}. Lo que jugaste después de esa fecha no está en la copia.")
+        }
+        None => format!("{kept}\n\nEmpiezas con un progreso nuevo; para recuperar el anterior, restaura una copia en Ajustes → Copias de seguridad."),
+    }
+}
+
+/// Held for as long as this process runs; the OS lets go of it when the
+/// process ends, however it ends.
+static INSTANCE_LOCK: OnceLock<std::fs::File> = OnceLock::new();
+
+/// Takes this data directory for one running Tilde. `Err` means another one
+/// has it. `Ok(None)` means the lock couldn't be tried at all (some network
+/// file systems can't): not a reason to refuse to start.
+///
+/// The single-instance plugin catches a second launch first, but only over
+/// the session bus, and says nothing when there is none. Two Tildes on one
+/// database must not happen: startup may rename the file, and sweeps
+/// temporary files the other one could be writing.
+fn lock_instance(app_dir: &Path) -> Result<Option<std::fs::File>, ()> {
+    let file = match std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(app_dir.join("tilde.lock"))
+    {
+        Ok(file) => file,
+        Err(e) => {
+            eprintln!("could not open the instance lock: {e}");
+            return Ok(None);
+        }
+    };
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => Err(()),
+        Err(std::fs::TryLockError::Error(e)) => {
+            eprintln!("could not lock this instance: {e}");
+            Ok(None)
+        }
+    }
+}
+
 /// Tilde can't run without its data. With no AppState the webview has
 /// nothing to show, so say why in a native dialog and quit when it closes.
 fn cannot_start(app: &tauri::App, message: String) {
@@ -985,7 +1144,23 @@ fn cannot_start(app: &tauri::App, message: String) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // Registered first: a second launch stops here, before it opens anything,
+    // and brings the first one's window forward instead.
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        // No state means the "can't start" dialog is up, with the window
+        // hidden behind it on purpose.
+        if app.try_state::<AppState>().is_none() {
+            return;
+        }
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.unminimize();
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    }));
+    builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -994,6 +1169,16 @@ pub fn run() {
                 .app_data_dir()
                 .unwrap_or_else(|_| PathBuf::from("."));
             let _ = std::fs::create_dir_all(&app_dir);
+            match lock_instance(&app_dir) {
+                Ok(Some(lock)) => {
+                    let _ = INSTANCE_LOCK.set(lock);
+                }
+                Ok(None) => {}
+                Err(()) => {
+                    cannot_start(app, "Tilde ya está abierto. Cierra la otra ventana de Tilde y vuelve a intentarlo.".into());
+                    return Ok(());
+                }
+            }
             let content = match ContentDb::open(&resolve_content_db(app.handle())) {
                 Ok(content) => content,
                 Err(e) => {
@@ -1003,31 +1188,29 @@ pub fn run() {
                     return Ok(());
                 }
             };
-            let (user, set_aside) = match db::open_or_set_aside(&user_db_path(&app_dir)) {
+            let opened = match open_progress(&app_dir) {
                 Ok(opened) => opened,
                 Err(e) => {
                     cannot_start(app, format!("No se pudo abrir tu progreso.\n\n{e}"));
                     return Ok(());
                 }
             };
-            if let Some(aside) = set_aside {
+            if let Some(aside) = &opened.set_aside {
                 app.dialog()
-                    .message(format!(
-                        "Tu progreso estaba dañado y no se podía leer. Lo hemos guardado aparte, sin borrar nada:\n{}\n\nEmpiezas con un progreso nuevo; para recuperar el anterior, restaura una copia en Ajustes → Copias de seguridad.",
-                        aside.display()
-                    ))
+                    .message(set_aside_message(aside, opened.recovered.as_ref()))
                     .title("Tilde")
                     .kind(MessageDialogKind::Warning)
                     .show(|_| {});
             }
-            let tts = Arc::new(tts::Tts::discover(&app_dir));
-            app.manage(AppState {
-                content: Mutex::new(content),
-                user: Mutex::new(user),
-                tts,
-                app_dir,
-                sessions: Mutex::new(HashMap::new()),
-                next_session: AtomicI64::new(1),
+            let tts = tts::Tts::discover(&app_dir);
+            app.manage(AppState::new(content, opened.conn, tts, app_dir.clone()));
+            // What a killed run left half-written. In the background: the
+            // backup folder may be a slow network or synced one.
+            std::thread::spawn(move || {
+                let hour = std::time::Duration::from_secs(3600);
+                if let Some(hour_ago) = std::time::SystemTime::now().checked_sub(hour) {
+                    backup::sweep_stale(&app_dir, &tts::cache_dir(&app_dir), &backup::folder(&app_dir), hour_ago);
+                }
             });
             Ok(())
         })

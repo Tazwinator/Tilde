@@ -375,6 +375,15 @@ pub struct BackupInfo {
     pub size_bytes: i64,
 }
 
+/// A backup that could not be written, for Settings to show.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupProblem {
+    pub message: String,
+    /// Unix seconds.
+    pub at: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupFolder {
@@ -382,4 +391,6 @@ pub struct BackupFolder {
     pub is_default: bool,
     /// Newest first.
     pub backups: Vec<BackupInfo>,
+    /// Set while the latest automatic backup into this folder has failed.
+    pub last_error: Option<BackupProblem>,
 }

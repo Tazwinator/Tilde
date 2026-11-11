@@ -21,6 +21,26 @@ const PIPER_STRIKES: u32 = 2;
 
 static TMP: AtomicUsize = AtomicUsize::new(0);
 
+/// Where synthesized audio is kept.
+pub fn cache_dir(app_dir: &Path) -> PathBuf {
+    app_dir.join("audio_cache")
+}
+
+/// True for the name of a wav still being written (`cached_or_make`):
+/// `<sha1>.wav.<pid>-<n>.tmp`. Only a killed run leaves one behind.
+pub fn is_temp_name(name: &str) -> bool {
+    let Some((sha, rest)) = name.split_once(".wav.") else {
+        return false;
+    };
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    sha.len() == 40
+        && sha.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        && rest
+            .strip_suffix(".tmp")
+            .and_then(|ids| ids.split_once('-'))
+            .is_some_and(|(pid, n)| digits(pid) && digits(n))
+}
+
 struct Piper {
     bin: PathBuf,
     model: PathBuf,
@@ -37,7 +57,7 @@ pub struct Tts {
 
 impl Tts {
     pub fn discover(app_dir: &Path) -> Tts {
-        let cache_dir = app_dir.join("audio_cache");
+        let cache_dir = cache_dir(app_dir);
         let _ = std::fs::create_dir_all(&cache_dir);
 
         let mut candidates: Vec<PathBuf> = Vec::new();
@@ -69,7 +89,7 @@ impl Tts {
             piper: None,
             espeak: None,
             piper_failures: AtomicU32::new(0),
-            cache_dir: app_dir.join("audio_cache"),
+            cache_dir: cache_dir(app_dir),
             timeout: TIMEOUT,
         }
     }
@@ -77,7 +97,7 @@ impl Tts {
     /// Speaks with `espeak` (in tests, a stand-in script) and nothing else.
     #[cfg(test)]
     pub(crate) fn with_espeak(app_dir: &Path, espeak: PathBuf) -> Tts {
-        let cache_dir = app_dir.join("audio_cache");
+        let cache_dir = cache_dir(app_dir);
         let _ = std::fs::create_dir_all(&cache_dir);
         Tts {
             espeak: Some(espeak),

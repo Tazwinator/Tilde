@@ -52,7 +52,9 @@ fn next_states(card: &Card) -> NextStates {
         .expect("fsrs next_states")
 }
 
-pub fn grade(conn: &Connection, word_id: i64, quality: i32) {
+/// Schedules the card and logs the review. The two writes belong together:
+/// callers run this inside their transaction.
+pub fn grade(conn: &Connection, word_id: i64, quality: i32) -> rusqlite::Result<()> {
     let card = load(conn, word_id).unwrap_or(Card {
         word_id,
         stability: 0.0,
@@ -99,38 +101,37 @@ pub fn grade(conn: &Connection, word_id: i64, quality: i32) {
             card.lapses + i64::from(quality == 1),
             new_state,
         ],
-    )
-    .ok();
+    )?;
     conn.execute(
         "INSERT INTO reviews(word_id, ts, grade) VALUES (?1, ?2, ?3)",
         rusqlite::params![word_id, now() as i64, quality],
-    )
-    .ok();
+    )?;
+    Ok(())
 }
 
-pub fn mark_known(conn: &Connection, word_id: i64) {
+pub fn mark_known(conn: &Connection, word_id: i64) -> rusqlite::Result<()> {
     conn.execute(
         "INSERT INTO cards(word_id, stability, difficulty, due_ts, last_review_ts, reps, lapses, state)
          VALUES (?1, 120.0, 4.5, ?2, ?3, 3, 0, 2)
          ON CONFLICT(word_id) DO UPDATE SET
            stability = 120.0, due_ts = excluded.due_ts, state = 2",
         rusqlite::params![word_id, now() + 180.0 * 86400.0, now()],
-    )
-    .ok();
+    )?;
+    Ok(())
 }
 
-pub fn reset(conn: &Connection, word_id: i64) {
-    conn.execute("DELETE FROM cards WHERE word_id = ?1", [word_id])
-        .ok();
+pub fn reset(conn: &Connection, word_id: i64) -> rusqlite::Result<()> {
+    conn.execute("DELETE FROM cards WHERE word_id = ?1", [word_id])?;
+    Ok(())
 }
 
-pub fn introduce(conn: &Connection, word_id: i64) {
+pub fn introduce(conn: &Connection, word_id: i64) -> rusqlite::Result<()> {
     conn.execute(
         "INSERT OR IGNORE INTO cards(word_id, stability, difficulty, due_ts, last_review_ts, reps, lapses, state)
          VALUES (?1, 0.0, 5.0, ?2, NULL, 0, 0, 1)",
         rusqlite::params![word_id, now()],
-    )
-    .ok();
+    )?;
+    Ok(())
 }
 
 pub fn load(conn: &Connection, word_id: i64) -> Option<Card> {

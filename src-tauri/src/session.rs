@@ -41,6 +41,47 @@ pub struct Session {
     pub answered: HashSet<usize>,
 }
 
+/// Everything grading a round changes in a `Session`, as it was before the
+/// round. If the round can't be saved, `rewind` puts it back, so the session
+/// in memory never counts an answer the database doesn't have. A field that
+/// grading changes must be added here too.
+pub struct SessionMark {
+    combo: i32,
+    best_combo: i32,
+    xp: i64,
+    correct: i64,
+    total_graded: i64,
+    results: usize,
+    new_words: usize,
+    event_id: Option<i64>,
+}
+
+impl Session {
+    pub fn mark(&self) -> SessionMark {
+        SessionMark {
+            combo: self.combo,
+            best_combo: self.best_combo,
+            xp: self.xp,
+            correct: self.correct,
+            total_graded: self.total_graded,
+            results: self.results.len(),
+            new_words: self.new_words.len(),
+            event_id: self.event_id,
+        }
+    }
+
+    pub fn rewind(&mut self, mark: SessionMark) {
+        self.combo = mark.combo;
+        self.best_combo = mark.best_combo;
+        self.xp = mark.xp;
+        self.correct = mark.correct;
+        self.total_graded = mark.total_graded;
+        self.results.truncate(mark.results);
+        self.new_words.truncate(mark.new_words);
+        self.event_id = mark.event_id;
+    }
+}
+
 pub fn round_count(kind: SessionKind) -> usize {
     match kind {
         SessionKind::Quick => 10,
@@ -700,11 +741,13 @@ pub fn placement_items(content: &ContentDb) -> Vec<PlacementItem> {
     shuffle(items)
 }
 
+/// Works out the placement and saves it (the known words, the frontier).
+/// Thousands of writes: the caller runs it inside its transaction.
 pub fn placement_result(
     user: &Connection,
     content: &ContentDb,
     answers: &[PlacementAnswer],
-) -> PlacementResult {
+) -> rusqlite::Result<PlacementResult> {
     let correct = answers.iter().filter(|a| a.correct).count();
     let cefr = match correct {
         0..=2 => "A1",
@@ -727,16 +770,16 @@ pub fn placement_result(
             break;
         }
         if w.gloss_en.is_some() {
-            deck::mark_known(user, w.word_id);
+            deck::mark_known(user, w.word_id)?;
             marked += 1;
         }
     }
-    crate::db::set_setting(user, "frontier_rank", &frontier.to_string());
-    PlacementResult {
+    crate::db::set_setting(user, "frontier_rank", &frontier.to_string())?;
+    Ok(PlacementResult {
         frontier_rank: frontier,
         words_marked_known: marked,
         cefr_estimate: cefr.to_string(),
-    }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -787,7 +830,7 @@ pub fn score_round(
     combo: &mut i32,
     best_combo: &mut i32,
     session_xp: &mut i64,
-) -> ScoreOutcome {
+) -> rusqlite::Result<ScoreOutcome> {
     let mut earned_badges = Vec::new();
 
     if correct {
@@ -821,18 +864,18 @@ pub fn score_round(
     *session_xp += xp as i64;
 
     // combo badges
-    if *combo >= 10 && award_badge(user, "combo-10") {
+    if *combo >= 10 && award_badge(user, "combo-10")? {
         earned_badges.push(find_badge("combo-10"));
     }
-    if *combo >= 25 && award_badge(user, "combo-25") {
+    if *combo >= 25 && award_badge(user, "combo-25")? {
         earned_badges.push(find_badge("combo-25"));
     }
 
-    ScoreOutcome {
+    Ok(ScoreOutcome {
         xp_gained: xp,
         combo: *combo,
         new_badges: earned_badges,
-    }
+    })
 }
 
 pub fn find_badge(id: &str) -> Badge {
@@ -848,13 +891,17 @@ pub fn find_badge(id: &str) -> Badge {
 }
 
 /// Returns true if the badge was newly earned.
-pub fn award_badge(user: &Connection, id: &str) -> bool {
-    user.execute(
+///
+/// Having it already is not an error (OR IGNORE), so an error here is a
+/// failed write like any other. Inside a transaction it must end the command
+/// (`?`): SQLite may have dropped the whole transaction with it, and whatever
+/// was written next would be saved on its own.
+pub fn award_badge(user: &Connection, id: &str) -> rusqlite::Result<bool> {
+    let added = user.execute(
         "INSERT OR IGNORE INTO badges(id, earned_at) VALUES (?1, ?2)",
         rusqlite::params![id, deck::now() as i64],
-    )
-    .map(|n| n > 0)
-    .unwrap_or(false)
+    )?;
+    Ok(added > 0)
 }
 
 pub fn session_summary(
@@ -870,7 +917,8 @@ pub fn session_summary(
         0.0
     };
     let mut badges = new_badges;
-    if session.total_graded >= 5 && (accuracy - 1.0).abs() < f32::EPSILON && award_badge(user, "perfect-session") {
+    // no transaction here: a badge that can't be written just isn't earned yet
+    if session.total_graded >= 5 && (accuracy - 1.0).abs() < f32::EPSILON && award_badge(user, "perfect-session").unwrap_or(false) {
         badges.push(find_badge("perfect-session"));
     }
     SessionSummary {
