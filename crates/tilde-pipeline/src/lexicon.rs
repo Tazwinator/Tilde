@@ -9,6 +9,7 @@
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::io::BufRead;
+use std::sync::OnceLock;
 
 pub const PERSONS: [&str; 6] = [
     "yo",
@@ -32,18 +33,64 @@ const FILLERS: [&str; 21] = [
     "ja", "jaja", "jajaja", "huh", "ey", "yeah", "yes",
 ];
 
+/// A hand-kept word list from `curation/`: one entry per line, `#` comments.
+/// Read once, because pass 1 asks about every entry of the dump.
+struct List {
+    text: &'static str,
+    words: OnceLock<HashSet<&'static str>>,
+}
+
+impl List {
+    const fn new(text: &'static str) -> List {
+        List {
+            text,
+            words: OnceLock::new(),
+        }
+    }
+
+    fn words(&self) -> &HashSet<&'static str> {
+        self.words.get_or_init(|| {
+            self.text
+                .lines()
+                .filter(|l| !l.starts_with('#'))
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .collect()
+        })
+    }
+}
+
+static LEMMAS: List = List::new(include_str!("../curation/lemmas.txt"));
+static INFLECTIONS: List = List::new(include_str!("../curation/inflections.txt"));
+static EXCLUDE: List = List::new(include_str!("../curation/exclude.txt"));
+static VULGAR: List = List::new(include_str!("../curation/vulgar.txt"));
+static NOT_REGIONAL: List = List::new(include_str!("../curation/not_regional.txt"));
+
 /// Words kept as their own entry although Wiktionary defines them as a form.
 fn keep_as_word(word: &str) -> bool {
-    include_str!("../curation/lemmas.txt")
-        .lines()
-        .any(|l| !l.starts_with('#') && l.trim() == word)
+    LEMMAS.words().contains(word)
 }
 
 /// Forms credited to what they inflect rather than to their own rare sense.
 fn prefer_inflection(form: &str) -> bool {
-    include_str!("../curation/inflections.txt")
-        .lines()
-        .any(|l| !l.starts_with('#') && l.trim() == form)
+    INFLECTIONS.words().contains(form)
+}
+
+/// Written forms that aren't Spanish words (names, English, misspellings,
+/// letters): they count for nothing, are never a lemma and are no form of one.
+pub fn excluded(form: &str) -> bool {
+    EXCLUDE.words().contains(form)
+}
+
+/// Words whose everyday meaning is vulgar although Wiktionary also lists an
+/// innocent sense.
+fn vulgar_listed(word: &str) -> bool {
+    VULGAR.words().contains(word)
+}
+
+/// Words standard in Spain whose senses Wiktionary labels Latin-American.
+fn not_regional(word: &str) -> bool {
+    NOT_REGIONAL.words().contains(word)
 }
 
 const ABBREVIATIONS: [(&str, &str); 9] = [
@@ -58,7 +105,8 @@ const ABBREVIATIONS: [(&str, &str); 9] = [
     ("vds.", "ustedes"),
 ];
 
-/// Wiktionary region labels outside Spain.
+/// Wiktionary region labels outside Spain. A sense that also names Spain is
+/// Peninsular, whatever else it names (see `sense`).
 const REGION_TAGS: [&str; 33] = [
     "Latin-America",
     "Mexico",
@@ -208,7 +256,7 @@ struct Sense<'a> {
     apocopic: bool,
 }
 
-fn sense(s: &RawSense) -> Option<Sense<'_>> {
+fn sense<'a>(s: &'a RawSense, word: &str) -> Option<Sense<'a>> {
     let has = |t: &str| s.tags.iter().any(|x| x == t);
     if has("misspelling") {
         return None;
@@ -224,7 +272,10 @@ fn sense(s: &RawSense) -> Option<Sense<'_>> {
     } else {
         Kind::Lemma
     };
-    let regional = s.tags.iter().any(|t| REGION_TAGS.contains(&t.as_str()));
+    // "patata" is tagged Spain and Philippines: used in Spain, so not regional
+    let regional = !has("Spain")
+        && !not_regional(word)
+        && s.tags.iter().any(|t| REGION_TAGS.contains(&t.as_str()));
     let vulgar = has("vulgar") || has("slur") || (has("offensive") && !has("mildly"));
     let lower = gloss.to_lowercase();
     Some(Sense {
@@ -304,7 +355,9 @@ impl Index {
         }
         let keep = keep_as_word(&e.word);
         for raw in &e.senses {
-            let Some(s) = sense(raw) else { continue };
+            let Some(s) = sense(raw, &e.word) else {
+                continue;
+            };
             if class == Class::Lex {
                 info.lex_senses += 1;
                 info.lex_regional += u32::from(s.regional);
@@ -384,10 +437,15 @@ impl Index {
         if let Some((_, lemma)) = ABBREVIATIONS.iter().find(|(a, _)| *a == form) {
             return vec![lemma.to_string()];
         }
-        if !is_word(form) || FILLERS.contains(&form) {
+        if !is_word(form) || FILLERS.contains(&form) || excluded(form) {
             return Vec::new();
         }
-        let targets = self.targets(form);
+        // not to an excluded lemma either: "duele" is doler, never "dolar"
+        let targets: Vec<String> = self
+            .targets(form)
+            .into_iter()
+            .filter(|t| !excluded(t))
+            .collect();
         let core: Vec<String> = targets
             .iter()
             .filter(|t| CORE_VERBS.contains(&t.as_str()))
@@ -484,12 +542,58 @@ pub struct Lemma {
     pub gloss_es: Option<String>,
     /// "latam" when every sense is labelled as used outside Spain.
     pub region: Option<&'static str>,
-    /// "vulgar" when every sense is vulgar or a slur.
+    /// "vulgar" when what we'd teach is vulgar, or the word is listed in
+    /// curation/vulgar.txt.
     pub register: Option<&'static str>,
     /// (form, tag): tag is "" for the lemma or an untagged inflection,
     /// "plural"/"feminine plural"/…, "participio", or "tense|person" for verbs.
+    /// Without the forms listed in curation/exclude.txt.
     pub forms: Vec<(String, String)>,
     pub conjugations: Vec<Conjugation>,
+}
+
+/// A hand-written gloss, and part of speech when Wiktionary's first entry
+/// isn't the one the gloss describes.
+#[derive(Debug, PartialEq)]
+pub struct Override {
+    pub gloss: String,
+    pub pos: Option<String>,
+}
+
+/// Reads `curation/glosses.tsv`: `lemma<TAB>gloss` or `lemma<TAB>gloss<TAB>pos`
+/// lines; `#` comments and blank lines are skipped. Anything else is an error
+/// naming the line: a row read wrongly would teach the wrong meaning.
+pub fn parse_overrides(text: &str) -> Result<HashMap<String, Override>, String> {
+    let mut out = HashMap::new();
+    for (n, line) in text.lines().enumerate() {
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+        let at = |what: &str| format!("line {}: {what}: {line:?}", n + 1);
+        let fields: Vec<&str> = line.split('\t').map(str::trim).collect();
+        let (lemma, gloss, pos) = match fields[..] {
+            [lemma, gloss] => (lemma, gloss, None),
+            [lemma, gloss, pos] => (lemma, gloss, Some(pos)),
+            _ => return Err(at("expected lemma<TAB>gloss or lemma<TAB>gloss<TAB>pos")),
+        };
+        if lemma.is_empty() || gloss.is_empty() {
+            return Err(at("empty lemma or gloss"));
+        }
+        if pos.is_some_and(|p| class_of(p).is_none()) {
+            return Err(at("unknown part of speech"));
+        }
+        if excluded(lemma) {
+            return Err(at("lemma is in exclude.txt"));
+        }
+        let entry = Override {
+            gloss: gloss.to_string(),
+            pos: pos.map(str::to_string),
+        };
+        if out.insert(lemma.to_string(), entry).is_some() {
+            return Err(at("lemma listed twice"));
+        }
+    }
+    Ok(out)
 }
 
 /// Re-reads the dump and builds a `Lemma` for each of `wanted` that has a gloss.
@@ -497,7 +601,7 @@ pub fn details(
     reader: impl BufRead,
     wanted: &HashSet<String>,
     index: &Index,
-    overrides: &HashMap<String, String>,
+    overrides: &HashMap<String, Override>,
 ) -> HashMap<String, Lemma> {
     let mut entries: HashMap<String, Vec<FullEntry>> = HashMap::new();
     for line in reader.lines() {
@@ -524,22 +628,31 @@ fn build_lemma(
     word: &str,
     entries: &[FullEntry],
     index: &Index,
-    overrides: &HashMap<String, String>,
+    overrides: &HashMap<String, Override>,
     inflections: Vec<String>,
 ) -> Option<Lemma> {
     let primary = primary(word, entries);
-    let gloss = match overrides.get(word) {
-        Some(g) => g.clone(),
+    let curated = overrides.get(word);
+    let gloss = match curated {
+        Some(o) => o.gloss.clone(),
         None => {
-            let (entry, glosses) = primary.as_ref()?;
+            let (entry, glosses, _) = primary.as_ref()?;
             join_glosses(glosses, entry.pos == "verb")
         }
     };
-    let pos = primary
-        .map(|(e, _)| &e.pos)
+    let pos = curated
+        .and_then(|o| o.pos.as_ref())
+        .or(primary.as_ref().map(|(e, ..)| &e.pos))
         .or(entries.first().map(|e| &e.pos))
         .cloned()
         .unwrap_or_default();
+    // a curated gloss is the curator's wording, whatever Wiktionary leads with
+    let teaches_vulgar = curated.is_none() && primary.is_some_and(|(_, _, vulgar)| vulgar);
+    let register = (index.register(word).is_some() || teaches_vulgar || vulgar_listed(word))
+        .then_some("vulgar");
+    // "militar" the adjective has a verb homograph: its table would show under
+    // the adjective, and the app only drills words whose pos is verb
+    let verb = pos == "verb";
     let mut forms: Vec<(String, String)> = vec![(word.to_string(), String::new())];
     let mut conjugations: Vec<Conjugation> = Vec::new();
     // one table per lemma: later verb entries are usually rare homographs
@@ -552,7 +665,7 @@ fn build_lemma(
             }
             let from_table = f.source.as_deref() == Some("conjugation");
             if is_verb && from_table {
-                if table_done {
+                if table_done || !verb {
                     continue;
                 }
                 if let Some((tense, person)) = conj_slot(&f.tags) {
@@ -583,6 +696,10 @@ fn build_lemma(
             forms.push((f, String::new()));
         }
     }
+    // "china" is the country far more often than the feminine of chino: a
+    // listed non-word must find no word, in a search or in a sentence. The
+    // table above keeps its cell ("charles"), which is still conjugated.
+    forms.retain(|(f, _)| !excluded(f));
     forms.sort();
     forms.dedup();
     Some(Lemma {
@@ -591,7 +708,7 @@ fn build_lemma(
         gloss,
         gloss_es: None,
         region: index.region(word),
-        register: index.register(word),
+        register,
         forms,
         conjugations,
     })
@@ -679,30 +796,55 @@ fn inflection_tag(tags: &[String]) -> Option<String> {
 }
 
 /// The entry that defines the word for a learner (the first, in page order,
-/// with a usable gloss) and its glosses. Skips letter names ("de" is also the
-/// letter D) and senses that only restate the word ("mi" the note).
-fn primary<'a>(word: &str, entries: &'a [FullEntry]) -> Option<(&'a FullEntry, Vec<String>)> {
+/// with a usable gloss), its glosses, and whether any of them comes from a
+/// vulgar sense. Skips letter names ("de" is also the letter D) and a sense
+/// that only restates the word, unless that is what the word first means
+/// ("idea", "hotel") and it isn't a function word ("mi" the note).
+fn primary<'a>(word: &str, entries: &'a [FullEntry]) -> Option<(&'a FullEntry, Vec<String>, bool)> {
+    let function_word = entries
+        .iter()
+        .any(|e| class_of(&e.pos) == Some(Class::Closed));
     [false, true].into_iter().find_map(|allow_marginal| {
         entries
             .iter()
-            .map(|e| (e, entry_glosses(word, e, allow_marginal)))
-            .find(|(_, g)| !g.is_empty())
+            .map(|e| {
+                let (glosses, vulgar) = entry_glosses(word, e, allow_marginal, function_word);
+                (e, glosses, vulgar)
+            })
+            .find(|(_, g, _)| !g.is_empty())
     })
 }
 
-fn entry_glosses(word: &str, e: &FullEntry, allow_marginal: bool) -> Vec<String> {
+fn entry_glosses(
+    word: &str,
+    e: &FullEntry,
+    allow_marginal: bool,
+    function_word: bool,
+) -> (Vec<String>, bool) {
     let closed = class_of(&e.pos) == Some(Class::Closed);
+    let senses: Vec<Sense> = e
+        .senses
+        .iter()
+        .filter_map(|s| sense(s, word))
+        .filter(|s| !s.letter && (allow_marginal || !s.marginal))
+        .collect();
+    // a noun or adjective with no sense of its own means what it points to:
+    // "moto" is a clipping of motocicleta, "maestra" the female maestro. Not
+    // verbs: a participle's quoted meaning ("praised") is no word to teach.
+    let pointer = matches!(e.pos.as_str(), "noun" | "adj")
+        && !senses
+            .iter()
+            .any(|s| s.kind == Kind::Lemma && clean_gloss(s.gloss).is_some());
     let mut out: Vec<String> = Vec::new();
     let mut informal: Vec<String> = Vec::new();
-    for s in e.senses.iter().filter_map(sense) {
-        if s.letter || (s.marginal && !allow_marginal) {
-            continue;
-        }
+    let (mut out_vulgar, mut informal_vulgar) = (false, false);
+    for s in &senses {
         let g = match s.kind {
             Kind::Lemma => clean_gloss(s.gloss),
             // function words and comparatives are defined as forms: "accusative
             // of yo: me", "comparative degree of malo: worse"
             _ if closed || s.comparative || keep_as_word(word) => clean_derived(s.gloss),
+            _ if pointer && !s.informal => clean_derived(s.gloss),
             _ => None,
         };
         let Some(g) = g else { continue };
@@ -710,19 +852,31 @@ fn entry_glosses(word: &str, e: &FullEntry, allow_marginal: bool) -> Vec<String>
             a.trim_end_matches('!')
                 .eq_ignore_ascii_case(b.trim_end_matches('!'))
         };
-        if same(&g, word) || descriptive(&g) || out.iter().chain(&informal).any(|o| same(o, &g)) {
+        // a cognate is its own translation when it leads the entry. A later
+        // one is a borrowed technical sense ("mesa" in geology), and one that
+        // differs in case is a name ("Romance").
+        let cognate = g.trim_end_matches('!') == word.trim_end_matches('!')
+            && out.is_empty()
+            && informal.is_empty()
+            && !function_word;
+        if (same(&g, word) && !cognate)
+            || descriptive(&g)
+            || out.iter().chain(&informal).any(|o| same(o, &g))
+        {
             continue;
         }
         if s.informal {
             informal.push(g);
+            informal_vulgar |= s.vulgar;
         } else {
             out.push(g);
+            out_vulgar |= s.vulgar;
         }
     }
     if out.is_empty() {
-        informal
+        (informal, informal_vulgar)
     } else {
-        out
+        (out, out_vulgar)
     }
 }
 
@@ -930,6 +1084,27 @@ mod tests {
     }
 
     #[test]
+    fn curated_forms_go_to_their_adjective_too() {
+        // "limpia" is in inflections.txt: a noun of its own ("a clean-up"), but
+        // mostly the feminine of limpio or a form of limpiar
+        let idx = index(&[
+            r#"{"word":"limpia","pos":"noun","lang_code":"es","senses":[{"glosses":["cleaning, clean-up"]}]}"#,
+            r#"{"word":"limpia","pos":"adj","lang_code":"es","senses":[{"glosses":["feminine singular of limpio"],"tags":["feminine","form-of","singular"],"form_of":[{"word":"limpio"}]}]}"#,
+            r#"{"word":"limpia","pos":"verb","lang_code":"es","senses":[{"glosses":["third-person singular present indicative of limpiar"],"tags":["form-of"],"form_of":[{"word":"limpiar"}]}]}"#,
+            r#"{"word":"limpio","pos":"adj","lang_code":"es","senses":[{"glosses":["clean"]}]}"#,
+            r#"{"word":"limpiar","pos":"verb","lang_code":"es","senses":[{"glosses":["to clean"]}]}"#,
+        ]);
+        // shared in proportion to what each is known to get on its own
+        assert_eq!(
+            idx.rank(&freq(&[("limpia", 100), ("limpio", 29), ("limpiar", 9)])),
+            [
+                ("limpio".to_string(), 29.0 + 75.0),
+                ("limpiar".to_string(), 9.0 + 25.0)
+            ]
+        );
+    }
+
+    #[test]
     fn comparatives_stay_words_and_apocopic_forms_fold() {
         let idx = index(&[
             r#"{"word":"malo","pos":"adj","lang_code":"es","senses":[{"glosses":["bad"]}]}"#,
@@ -1072,7 +1247,7 @@ mod tests {
             r#"{"word":"de","pos":"noun","senses":[{"glosses":["The name of the Latin script letter D/d."]}]}"#,
             r#"{"word":"de","pos":"prep","senses":[{"glosses":["of; 's"]},{"glosses":["from (with the source of)"]}]}"#,
         ]);
-        let (e, g) = primary("de", &de).unwrap();
+        let (e, g, _) = primary("de", &de).unwrap();
         assert_eq!(
             (e.pos.as_str(), join_glosses(&g, false).as_str()),
             ("prep", "of; from")
@@ -1082,7 +1257,7 @@ mod tests {
             r#"{"word":"mi","pos":"noun","senses":[{"glosses":["mi"]}]}"#,
             r#"{"word":"mi","pos":"det","senses":[{"glosses":["apocopic form of mío, my"],"tags":["alt-of"],"alt_of":[{"word":"mío"}]}]}"#,
         ]);
-        let (e, g) = primary("mi", &mi).unwrap();
+        let (e, g, _) = primary("mi", &mi).unwrap();
         assert_eq!(
             (e.pos.as_str(), join_glosses(&g, false).as_str()),
             ("det", "my")
@@ -1122,6 +1297,395 @@ mod tests {
             join_glosses(&primary("tío", &tio).unwrap().1, false),
             "uncle; dude, guy"
         );
+    }
+
+    /// (part of speech, gloss) of the entry that defines `word`.
+    fn defined(word: &str, lines: &[&str]) -> Option<(String, String)> {
+        let entries = full(lines);
+        let p = primary(word, &entries)?;
+        Some((p.0.pos.clone(), join_glosses(&p.1, p.0.pos == "verb")))
+    }
+
+    /// What the word list would hold for `word`, given these dump lines.
+    fn detail(word: &str, lines: &[&str]) -> Option<Lemma> {
+        curated_detail(word, lines, "")
+    }
+
+    /// The same, with `glosses` as the curated glosses file.
+    fn curated_detail(word: &str, lines: &[&str], glosses: &str) -> Option<Lemma> {
+        let jsonl: Vec<String> = lines.iter().map(|l| l.replace('\n', "")).collect();
+        let wanted: HashSet<String> = [word.to_string()].into();
+        details(
+            jsonl.join("\n").as_bytes(),
+            &wanted,
+            &index(lines),
+            &parse_overrides(glosses).unwrap(),
+        )
+        .remove(word)
+    }
+
+    fn freq(counts: &[(&str, u64)]) -> Vec<(String, u64)> {
+        counts.iter().map(|(f, c)| (f.to_string(), *c)).collect()
+    }
+
+    #[test]
+    fn a_sense_that_names_spain_is_not_regional() {
+        let patata = [
+            r#"{"word":"patata","pos":"noun","lang_code":"es","senses":[{"glosses":["potato"],"tags":["Philippines","Spain","feminine"]},{"glosses":["piece of rubbish"],"tags":["colloquial","feminine"]}]}"#,
+        ];
+        assert_eq!(
+            defined("patata", &patata).unwrap().1,
+            "potato; piece of rubbish"
+        );
+        // a sense used only outside Spain still gives way to a plainer one
+        let carro = [
+            r#"{"word":"carro","pos":"noun","lang_code":"es","senses":[{"glosses":["car"],"tags":["Mexico"]},{"glosses":["cart"]}]}"#,
+        ];
+        assert_eq!(defined("carro", &carro).unwrap().1, "cart");
+        // Spain doesn't excuse a sense that is also archaic, and a dialect
+        // label alone is still regional
+        let idx = index(&[
+            r#"{"word":"zumo","pos":"noun","lang_code":"es","senses":[{"glosses":["juice"],"tags":["Equatorial-Guinea","Spain"]}]}"#,
+            r#"{"word":"mancebo","pos":"noun","lang_code":"es","senses":[{"glosses":["youth"],"tags":["Spain","archaic"]}]}"#,
+            r#"{"word":"guagua","pos":"noun","lang_code":"es","senses":[{"glosses":["bus"],"tags":["Canary-Islands"]}]}"#,
+        ]);
+        assert!(idx.mainstream("zumo"));
+        assert!(!idx.mainstream("mancebo"));
+        assert!(!idx.mainstream("guagua"));
+        assert_eq!(idx.region("guagua"), Some("latam"));
+    }
+
+    #[test]
+    fn a_cognate_is_its_own_translation_when_it_is_the_first_meaning() {
+        let both = |pos: &str, gloss: &str| Some((pos.to_string(), gloss.to_string()));
+        let casino = [
+            r#"{"word":"casino","pos":"noun","senses":[{"glosses":["casino"]},{"glosses":["cafeteria, canteen"],"tags":["Chile"]}]}"#,
+        ];
+        assert_eq!(defined("casino", &casino), both("noun", "casino"));
+        let nuclear = [
+            r#"{"word":"nuclear","pos":"adj","senses":[{"glosses":["nuclear"]}]}"#,
+            r#"{"word":"nuclear","pos":"verb","senses":[{"glosses":["to join up"]}]}"#,
+        ];
+        assert_eq!(defined("nuclear", &nuclear), both("adj", "nuclear"));
+        let bravo = [r#"{"word":"bravo","pos":"intj","senses":[{"glosses":["bravo!"]}]}"#];
+        assert_eq!(defined("bravo", &bravo), both("intj", "bravo!"));
+        // a later sense that restates the word is a borrowed technical term
+        let mesa = [
+            r#"{"word":"mesa","pos":"noun","senses":[{"glosses":["table"]},{"glosses":["mesa"]},{"glosses":["desk"]}]}"#,
+        ];
+        assert_eq!(defined("mesa", &mesa), both("noun", "table; desk"));
+        // "Romance" the language family is a name, not the word itself
+        let romance = [
+            r#"{"word":"romance","pos":"adj","senses":[{"glosses":["Romance"]}]}"#,
+            r#"{"word":"romance","pos":"noun","senses":[{"glosses":["romance, love affair"]}]}"#,
+        ];
+        assert_eq!(
+            defined("romance", &romance),
+            both("noun", "romance, love affair")
+        );
+    }
+
+    #[test]
+    fn a_word_whose_only_sense_is_a_cognate_reaches_the_list() {
+        let idea = detail(
+            "idea",
+            &[r#"{"word":"idea","pos":"noun","lang_code":"es","senses":[{"glosses":["idea"]}]}"#],
+        );
+        assert_eq!(idea.map(|l| l.gloss), Some("idea".to_string()));
+    }
+
+    #[test]
+    fn feminine_and_clipped_nouns_take_the_meaning_they_point_to() {
+        let moto = [
+            r#"{"word":"moto","pos":"noun","senses":[{"glosses":["clipping of motocicleta; motorcycle"],"tags":["alt-of","clipping","feminine"],"alt_of":[{"word":"motocicleta"}]}]}"#,
+            r#"{"word":"moto","pos":"noun","senses":[{"glosses":["milestone"]}]}"#,
+        ];
+        assert_eq!(defined("moto", &moto).unwrap().1, "motorcycle");
+        let maestra = [
+            r#"{"word":"maestra","pos":"noun","senses":[{"glosses":["female equivalent of maestro (“teacher”)"],"tags":["feminine","form-of"],"form_of":[{"word":"maestro"}]}]}"#,
+            r#"{"word":"maestra","pos":"noun","senses":[{"glosses":["queen bee"]}]}"#,
+        ];
+        assert_eq!(defined("maestra", &maestra).unwrap().1, "teacher");
+        // an entry with a meaning of its own keeps to it
+        let prima = [
+            r#"{"word":"prima","pos":"noun","senses":[{"glosses":["female equivalent of primo (“cousin”)"],"tags":["feminine","form-of"],"form_of":[{"word":"primo"}]},{"glosses":["bonus"]}]}"#,
+        ];
+        assert_eq!(defined("prima", &prima).unwrap().1, "bonus");
+        // not verbs: a participle's quoted meaning is not a word to teach
+        let alabado = [
+            r#"{"word":"alabado","pos":"verb","senses":[{"glosses":["past participle of alabar (“praised”)"],"tags":["form-of","participle","past"],"form_of":[{"word":"alabar"}]}]}"#,
+        ];
+        assert_eq!(defined("alabado", &alabado), None);
+        // and not slang
+        let jefa = [
+            r#"{"word":"jefa","pos":"noun","senses":[{"glosses":["female equivalent of jefe (“old man”)"],"tags":["feminine","form-of","slang"],"form_of":[{"word":"jefe"}]}]}"#,
+        ];
+        assert_eq!(defined("jefa", &jefa), None);
+    }
+
+    const CHILE: &str = r#"{"word":"chile","pos":"noun","lang_code":"es","senses":[{"glosses":["chili pepper"],"tags":["Mexico"]},{"glosses":["penis"],"tags":["Mexico","vulgar"]}]}"#;
+
+    #[test]
+    fn vulgar_when_the_meaning_we_would_teach_is_vulgar() {
+        // nothing plainer than a regional sense, so the vulgar one is taught too
+        let chile = detail("chile", &[CHILE]).unwrap();
+        assert_eq!(chile.gloss, "chili pepper; penis");
+        assert_eq!(chile.register, Some("vulgar"));
+        // one vulgar sense among plain ones is never shown, so it flags nothing
+        let madre = detail(
+            "madre",
+            &[
+                r#"{"word":"madre","pos":"noun","lang_code":"es","senses":[{"glosses":["mother"]},{"glosses":["a hell of a lot"],"tags":["Mexico","vulgar"]}]}"#,
+            ],
+        )
+        .unwrap();
+        assert_eq!((madre.gloss.as_str(), madre.register), ("mother", None));
+        // a curated gloss is what gets taught, whatever Wiktionary leads with
+        let curated = curated_detail("chile", &[CHILE], "chile\tchili pepper").unwrap();
+        assert_eq!(curated.register, None);
+    }
+
+    #[test]
+    fn listed_vulgar_words_are_flagged_whatever_their_other_senses() {
+        let follar = detail(
+            "follar",
+            &[
+                r#"{"word":"follar","pos":"verb","lang_code":"es","senses":[{"glosses":["to fuck"],"tags":["Spain","vulgar"]},{"glosses":["to compose in sheets"]},{"glosses":["to fart noiselessly"],"tags":["pronominal"]}]}"#,
+            ],
+        )
+        .unwrap();
+        assert_eq!(follar.register, Some("vulgar"));
+    }
+
+    #[test]
+    fn excluded_forms_count_for_nothing_and_never_become_words() {
+        // "lindar" is listed for the sake of "lindo", "charles" as a name
+        let idx = index(&[
+            r#"{"word":"lindo","pos":"adj","lang_code":"es","senses":[{"glosses":["pretty"],"tags":["Latin-America","dated"]}]}"#,
+            r#"{"word":"lindo","pos":"verb","lang_code":"es","senses":[{"glosses":["first-person singular present indicative of lindar"],"tags":["form-of"],"form_of":[{"word":"lindar"}]}]}"#,
+            r#"{"word":"lindar","pos":"verb","lang_code":"es","senses":[{"glosses":["to abut"]}]}"#,
+            r#"{"word":"charles","pos":"verb","lang_code":"es","senses":[{"glosses":["second-person singular present subjunctive of charlar"],"tags":["form-of"],"form_of":[{"word":"charlar"}]}]}"#,
+            r#"{"word":"charlar","pos":"verb","lang_code":"es","senses":[{"glosses":["to chat"]}]}"#,
+        ]);
+        assert_eq!(
+            idx.rank(&freq(&[("lindo", 100), ("charles", 50), ("charlar", 3)])),
+            [("lindo".to_string(), 100.0), ("charlar".to_string(), 3.0)]
+        );
+        // an excluded lemma takes no share of a form it has in common
+        let idx = index(&[
+            r#"{"word":"duele","pos":"verb","lang_code":"es","senses":[{"glosses":["third-person singular present indicative of doler"],"tags":["form-of"],"form_of":[{"word":"doler"}]},{"glosses":["third-person singular present indicative of dolar"],"tags":["form-of"],"form_of":[{"word":"dolar"}]}]}"#,
+            r#"{"word":"doler","pos":"verb","lang_code":"es","senses":[{"glosses":["to hurt"]}]}"#,
+            r#"{"word":"dolar","pos":"verb","lang_code":"es","senses":[{"glosses":["to hew"]}]}"#,
+        ]);
+        assert_eq!(
+            idx.rank(&freq(&[("duele", 10), ("dolar", 4)])),
+            [("doler".to_string(), 10.0)]
+        );
+    }
+
+    #[test]
+    fn excluded_forms_are_no_form_of_any_word() {
+        let forms = |l: &Lemma| -> Vec<String> { l.forms.iter().map(|(f, _)| f.clone()).collect() };
+        // "china" is the country far more often than the feminine of chino
+        let chino = detail(
+            "chino",
+            &[
+                r#"{"word":"chino","pos":"adj","lang_code":"es","senses":[{"glosses":["Chinese"]}],"forms":[{"form":"china","tags":["feminine"]},{"form":"chinos","tags":["masculine","plural"]},{"form":"chinas","tags":["feminine","plural"]}]}"#,
+            ],
+        )
+        .unwrap();
+        assert_eq!(forms(&chino), ["chinas", "chino", "chinos"]);
+        // "charles" is a name, and a cell of charlar's table as well as a
+        // form pass 1 saw; "charlan" is only the latter and stays
+        let charlar = detail(
+            "charlar",
+            &[
+                r#"{"word":"charlar","pos":"verb","lang_code":"es","senses":[{"glosses":["to chat"]}],"forms":[
+                    {"form":"charlo","tags":["first-person","indicative","present","singular"],"source":"conjugation"},
+                    {"form":"charles","tags":["informal","present","second-person","singular","subjunctive"],"source":"conjugation"}]}"#,
+                r#"{"word":"charles","pos":"verb","lang_code":"es","senses":[{"glosses":["second-person singular present subjunctive of charlar"],"tags":["form-of"],"form_of":[{"word":"charlar"}]}]}"#,
+                r#"{"word":"charlan","pos":"verb","lang_code":"es","senses":[{"glosses":["third-person plural present indicative of charlar"],"tags":["form-of"],"form_of":[{"word":"charlar"}]}]}"#,
+            ],
+        )
+        .unwrap();
+        assert_eq!(forms(&charlar), ["charlan", "charlar", "charlo"]);
+        // the table itself is whole: "que no charles" is still drilled
+        assert!(charlar
+            .conjugations
+            .iter()
+            .any(|c| c.form == "charles" && c.tense == "subjuntivo presente" && c.person == "tú"));
+    }
+
+    const IR: &str =
+        r#"{"word":"ir","pos":"verb","lang_code":"es","senses":[{"glosses":["to go"]}]}"#;
+
+    #[test]
+    fn a_form_listed_as_its_own_word_beats_the_core_verbs() {
+        let fuera = [
+            r#"{"word":"fuera","pos":"adv","lang_code":"es","senses":[{"glosses":["outside"]},{"glosses":["out"]}]}"#,
+            r#"{"word":"fuera","pos":"verb","lang_code":"es","senses":[{"glosses":["first/third-person singular imperfect subjunctive of ser"],"tags":["form-of"],"form_of":[{"word":"ser"}]},{"glosses":["first/third-person singular imperfect subjunctive of ir"],"tags":["form-of"],"form_of":[{"word":"ir"}]}]}"#,
+            SER,
+            IR,
+        ];
+        let r = index(&fuera).rank(&freq(&[("fuera", 100), ("ser", 10), ("ir", 10)]));
+        assert_eq!(r[0], ("fuera".to_string(), 100.0));
+        assert_eq!(r.len(), 3);
+        // and its verb senses add nothing to what it means
+        let l = detail("fuera", &fuera).unwrap();
+        assert_eq!((l.pos.as_str(), l.gloss.as_str()), ("adv", "outside; out"));
+    }
+
+    #[test]
+    fn words_wiktionary_mislabels_as_latin_american_are_general() {
+        let idx = index(&[
+            r#"{"word":"herir","pos":"verb","lang_code":"es","senses":[{"glosses":["to hurt, to wound"],"tags":["Latin-America","colloquial","transitive"]},{"glosses":["to offend"],"tags":["Latin-America","colloquial","transitive"]}]}"#,
+            r#"{"word":"computadora","pos":"noun","lang_code":"es","senses":[{"glosses":["computer"],"tags":["Latin-America"]}]}"#,
+        ]);
+        assert_eq!(idx.region("herir"), None);
+        assert!(idx.mainstream("herir"));
+        assert_eq!(idx.region("computadora"), Some("latam"));
+        assert!(!idx.mainstream("computadora"));
+    }
+
+    #[test]
+    fn only_verbs_carry_conjugation_tables() {
+        // "militar" is first of all an adjective; its verb homograph has a table
+        let militar = detail(
+            "militar",
+            &[
+                r#"{"word":"militar","pos":"adj","lang_code":"es","senses":[{"glosses":["military"]}],"forms":[{"form":"militares","tags":["plural"]}]}"#,
+                &TENER.replace(r#""word":"tener""#, r#""word":"militar""#),
+            ],
+        )
+        .unwrap();
+        assert_eq!(militar.pos, "adj");
+        assert!(militar.conjugations.is_empty());
+        assert!(
+            militar
+                .forms
+                .iter()
+                .all(|(_, tag)| !tag.contains('|') && tag != "participio"),
+            "{:?}",
+            militar.forms
+        );
+        assert!(militar
+            .forms
+            .contains(&("militares".into(), "plural".into())));
+        // "placer" is first a verb in Wiktionary, but curated as the noun
+        let placer = [
+            &TENER.replace(r#""word":"tener""#, r#""word":"placer""#),
+            r#"{"word":"placer","pos":"noun","lang_code":"es","senses":[{"glosses":["pleasure"]}],"forms":[{"form":"placeres","tags":["plural"]}]}"#,
+        ];
+        assert!(!detail("placer", &placer).unwrap().conjugations.is_empty());
+        let noun = curated_detail("placer", &placer, "placer\tpleasure\tnoun").unwrap();
+        assert_eq!(
+            (noun.pos.as_str(), noun.gloss.as_str()),
+            ("noun", "pleasure")
+        );
+        assert!(noun.conjugations.is_empty());
+        assert!(noun.forms.contains(&("placeres".into(), "plural".into())));
+    }
+
+    #[test]
+    fn curated_part_of_speech_wins() {
+        let veces = [
+            r#"{"word":"veces","pos":"prep","lang_code":"es","senses":[{"glosses":["by, times"]}]}"#,
+            r#"{"word":"veces","pos":"noun","lang_code":"es","senses":[{"glosses":["plural of vez"],"tags":["form-of","plural"],"form_of":[{"word":"vez"}]}]}"#,
+        ];
+        let l = curated_detail("veces", &veces, "veces\ttimes (plural of vez)\tnoun").unwrap();
+        assert_eq!(
+            (l.pos.as_str(), l.gloss.as_str()),
+            ("noun", "times (plural of vez)")
+        );
+        // without the column, the part of speech is still Wiktionary's
+        let l = curated_detail("veces", &veces, "veces\ttimes (plural of vez)").unwrap();
+        assert_eq!(
+            (l.pos.as_str(), l.gloss.as_str()),
+            ("prep", "times (plural of vez)")
+        );
+    }
+
+    #[test]
+    fn override_file_errors_name_the_line() {
+        let ok = parse_overrides("# comment\n\na\tto\ngato\tcat, tomcat\tnoun\n").unwrap();
+        assert_eq!(ok.len(), 2);
+        assert_eq!(
+            ok["a"],
+            Override {
+                gloss: "to".into(),
+                pos: None
+            }
+        );
+        assert_eq!(
+            ok["gato"],
+            Override {
+                gloss: "cat, tomcat".into(),
+                pos: Some("noun".into())
+            }
+        );
+        for (bad, why) in [
+            ("gato\tcat\tnoon", "unknown part of speech"),
+            ("gato\tcat\t", "unknown part of speech"),
+            ("gato\tcat\tnoun\tx", "expected"),
+            ("gato cat", "expected"),
+            ("gato\t", "empty lemma or gloss"),
+            ("gato\t \tnoun", "empty lemma or gloss"),
+            ("\tcat", "empty lemma or gloss"),
+            ("gato\tcat\ngato\ttomcat", "lemma listed twice"),
+            // an excluded form can never be a word, so a gloss for it is a mistake
+            ("dolar\tdollar", "exclude.txt"),
+        ] {
+            let text = format!("# header\nperro\tdog\n{bad}\n");
+            let err = parse_overrides(&text).expect_err(bad);
+            let line = 2 + bad.lines().count();
+            assert!(
+                err.starts_with(&format!("line {line}: ")) && err.contains(why),
+                "{bad:?}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn curation_files_agree() {
+        let glosses = parse_overrides(include_str!("../curation/glosses.tsv")).unwrap();
+        let lists = [
+            ("lemmas.txt", &LEMMAS),
+            ("inflections.txt", &INFLECTIONS),
+            ("vulgar.txt", &VULGAR),
+            ("not_regional.txt", &NOT_REGIONAL),
+            ("exclude.txt", &EXCLUDE),
+        ];
+        for (file, list) in lists {
+            assert!(!list.words().is_empty(), "{file} is empty");
+            for word in list.words() {
+                // lowercase letters only: catches typos and stray spaces
+                assert!(is_word(word), "{file}: {word:?} is not a word");
+                // an excluded form is never a word, so no other list can want it
+                assert!(
+                    file == "exclude.txt" || !excluded(word),
+                    "{word} is in exclude.txt and {file}"
+                );
+            }
+            // an entry listed twice is a slip of the hand
+            let entries = list
+                .text
+                .lines()
+                .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+                .count();
+            assert_eq!(entries, list.words().len(), "{file} lists a word twice");
+        }
+        for (word, curated) in &glosses {
+            assert!(is_word(word), "glosses.tsv: {word:?} is not a word");
+            // the length `join_glosses` keeps to: it has to fit an answer button
+            assert!(
+                curated.gloss.chars().count() <= 48,
+                "glosses.tsv: the gloss of {word} is too long"
+            );
+        }
+        // a word can't be both its own entry and credited to what it inflects
+        for word in LEMMAS.words() {
+            assert!(!prefer_inflection(word), "{word} is in both lists");
+        }
     }
 
     #[test]

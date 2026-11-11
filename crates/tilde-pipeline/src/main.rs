@@ -2,7 +2,10 @@
 //! open data. See `sources.rs` for the datasets and their licenses.
 //!
 //! Usage: cargo run --release -p tilde-pipeline [--out path] [--data-dir dir]
+//!        [--credits path]
 //! Downloads are cached in the data dir (default: `data/` at the repo root).
+//! `--credits` also writes how often each lemma's forms occur (lemma<TAB>count,
+//! most frequent first), to judge curation by.
 //!
 //! A build to the default path also records the ids of new lemmas in
 //! `curation/word_ids.tsv`; commit that file together with the database.
@@ -35,6 +38,7 @@ struct Args {
     data: PathBuf,
     /// Building somewhere other than the committed database.
     trial: bool,
+    credits: Option<PathBuf>,
 }
 
 fn parse_args() -> Args {
@@ -42,6 +46,7 @@ fn parse_args() -> Args {
     let mut out = root.join("src-tauri/resources/content.db");
     let mut data = root.join("data");
     let mut trial = false;
+    let mut credits = None;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -50,10 +55,16 @@ fn parse_args() -> Args {
                 trial = true;
             }
             "--data-dir" => data = it.next().map(PathBuf::from).unwrap_or(data),
+            "--credits" => credits = it.next().map(PathBuf::from),
             other => eprintln!("unknown arg {other}"),
         }
     }
-    Args { out, data, trial }
+    Args {
+        out,
+        data,
+        trial,
+        credits,
+    }
 }
 
 fn gz(path: &Path) -> BufReader<flate2::read::GzDecoder<std::fs::File>> {
@@ -73,16 +84,6 @@ fn load_frequency(path: &Path) -> Vec<(String, u64)> {
         .collect()
 }
 
-/// Hand-written glosses for function words whose Wiktionary glosses read badly.
-fn gloss_overrides() -> HashMap<String, String> {
-    include_str!("../curation/glosses.tsv")
-        .lines()
-        .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
-        .filter_map(|l| l.split_once('\t'))
-        .map(|(w, g)| (w.trim().to_string(), g.trim().to_string()))
-        .collect()
-}
-
 fn main() {
     let args = parse_args();
     println!("== Tilde content pipeline ==");
@@ -97,6 +98,13 @@ fn main() {
         eprintln!("error: {e}");
         std::process::exit(1);
     });
+
+    // hand-written glosses for words whose Wiktionary glosses read badly
+    let overrides = lexicon::parse_overrides(include_str!("../curation/glosses.tsv"))
+        .unwrap_or_else(|e| {
+            eprintln!("error: curation/glosses.tsv: {e}");
+            std::process::exit(1);
+        });
 
     println!("[1/5] sources");
     let fetch = |s: &sources::Source| {
@@ -115,6 +123,10 @@ fn main() {
 
     println!("[3/5] lemmatizing and ranking the frequency list");
     let ranked = index.rank(&load_frequency(&freq_path));
+    if let Some(path) = &args.credits {
+        let lines: String = ranked.iter().map(|(w, c)| format!("{w}\t{c}\n")).collect();
+        std::fs::write(path, lines).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+    }
     let shortlist: HashSet<String> = ranked
         .iter()
         .take(MAX_WORDS + 2_000)
@@ -122,7 +134,7 @@ fn main() {
         .collect();
 
     println!("[4/5] glosses, inflections and conjugation tables");
-    let mut details = lexicon::details(gz(&wikt_path), &shortlist, &index, &gloss_overrides());
+    let mut details = lexicon::details(gz(&wikt_path), &shortlist, &index, &overrides);
     let mut words: Vec<lexicon::Lemma> = ranked
         .iter()
         .filter_map(|(w, _)| details.remove(w))

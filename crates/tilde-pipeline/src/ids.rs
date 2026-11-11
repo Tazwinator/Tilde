@@ -104,9 +104,14 @@ pub struct Listed {
     pub gloss: String,
 }
 
+/// Glosses are compared for the words a person reads through after a rules
+/// change: the commonest.
+const GLOSS_REVIEW_RANK: i64 = 5000;
+
 /// What a rebuild changes against the database it replaces: which lemmas
-/// entered and left, whether any id moved (it never should), and pairs that
-/// look like one word under a new headword, which a person has to decide.
+/// entered and left, whether any id moved (it never should), pairs that
+/// look like one word under a new headword, which a person has to decide,
+/// and the commonest words whose gloss changed.
 pub fn report(before: &[Listed], after: &[Listed]) -> String {
     if before.is_empty() {
         return String::new();
@@ -171,6 +176,24 @@ pub fn report(before: &[Listed], after: &[Listed]) -> String {
             ));
         }
     }
+    let reworded: Vec<(&Listed, &Listed)> = after
+        .iter()
+        .filter(|w| w.rank <= GLOSS_REVIEW_RANK)
+        .filter_map(|w| Some((*old.get(w.lemma.as_str())?, w)))
+        .filter(|(o, w)| o.gloss != w.gloss)
+        .collect();
+    if !reworded.is_empty() {
+        out.push_str(&format!(
+            "  glosses changed in the top {GLOSS_REVIEW_RANK}: {}\n",
+            reworded.len()
+        ));
+        for (o, w) in reworded {
+            out.push_str(&format!(
+                "    {} (id {}, rank {}): {} -> {}\n",
+                w.lemma, w.id, w.rank, o.gloss, w.gloss
+            ));
+        }
+    }
     out
 }
 
@@ -212,6 +235,34 @@ mod tests {
         let moved = report(&before, &[listed("casa", 9, 1, "house")]);
         assert!(moved.contains("ERROR: 1 lemmas would change id"), "{moved}");
         assert_eq!(report(&[], &after), "");
+    }
+
+    #[test]
+    fn report_lists_changed_glosses() {
+        let before = [
+            listed("patata", 2320, 2320, "piece of rubbish"),
+            listed("casa", 1, 1, "house"),
+            listed("acatar", 11999, 5001, "to obey"),
+        ];
+        let after = [
+            listed("casa", 1, 1, "house"),
+            listed("patata", 2320, 2320, "potato; piece of rubbish"),
+            // past the range a person reads through
+            listed("acatar", 11999, 5001, "to comply with, to obey"),
+        ];
+        let text = report(&before, &after);
+        assert!(
+            text.contains("  glosses changed in the top 5000: 1\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "    patata (id 2320, rank 2320): piece of rubbish -> potato; piece of rubbish\n"
+            ),
+            "{text}"
+        );
+        assert!(!text.contains("acatar"), "{text}");
+        assert!(!text.contains("casa"), "{text}");
     }
 
     #[test]

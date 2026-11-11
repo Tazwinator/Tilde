@@ -1,0 +1,23 @@
+# Words whose everyday meaning is vulgar or a slur although Wiktionary also
+# lists an innocent sense ("polla" is also a pullet), so the rule "every sense
+# is vulgar" misses them. The app never introduces a word flagged vulgar and
+# keeps it out of the wrong answers. Everyday words with one vulgar sense
+# among others (huevo, leche, coger) don't belong here. Slurs that Wiktionary
+# labels only "derogatory" do: the rule doesn't read that label as vulgar,
+# because it also marks mild words like "tonto". One word per line.
+puto
+coño
+follar
+carajo
+cabrón
+polla
+maricón
+marica
+jodidamente
+hostia
+verga
+pendejo
+capullo
+negrata
+fulana
+golfa

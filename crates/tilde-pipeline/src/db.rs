@@ -20,7 +20,7 @@ CREATE TABLE words(
   gloss_en TEXT,
   gloss_es TEXT,
   region TEXT,   -- 'latam' when every sense is labelled as used outside Spain
-  register TEXT  -- 'vulgar' when every sense is vulgar
+  register TEXT  -- 'vulgar' when what the word teaches is vulgar
 );
 CREATE UNIQUE INDEX idx_words_rank ON words(rank);
 CREATE UNIQUE INDEX idx_words_lemma ON words(lemma COLLATE NOCASE);

@@ -1,0 +1,8 @@
+# Words standard in Spain whose senses Wiktionary labels Latin-American
+# ("herir" is the ordinary word for "to wound" everywhere). Their senses are
+# read as general, so the word is taught like any other. One word per line.
+herir
+arrojar
+regresar
+demorar
+agregar

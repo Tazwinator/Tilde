@@ -1,5 +1,6 @@
 //! Example sentences: Tatoeba en–es pairs, linked to the words they contain.
 
+use crate::lexicon::excluded;
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::Path;
@@ -50,6 +51,7 @@ pub fn tokens(s: &str) -> Vec<String> {
 
 /// Looks words up by exact form first, falling back to accent-insensitive
 /// matching only when there is no exact match (so "de" never links to "dé").
+/// A token listed in curation/exclude.txt is no word and finds nothing.
 pub struct Linker {
     exact: HashMap<String, Vec<i64>>,
     loose: HashMap<String, Vec<i64>>,
@@ -74,6 +76,11 @@ impl Linker {
     }
 
     pub fn lookup(&self, token: &str) -> &[i64] {
+        // not even without its accent: "Charles" would reach charlar through
+        // the voseo form "charlés"
+        if excluded(token) {
+            return &[];
+        }
         self.exact
             .get(token)
             .or_else(|| self.loose.get(&strip_accents(token)))
@@ -162,6 +169,17 @@ mod tests {
         assert_eq!(linker.lookup("dé"), [2]);
         assert_eq!(linker.lookup("esta"), [3]);
         assert!(linker.lookup("nada").is_empty());
+    }
+
+    #[test]
+    fn a_token_listed_as_a_non_word_links_to_nothing() {
+        // "charles" and "linea" are in curation/exclude.txt: a name that the
+        // voseo form "charlés" would answer for, and a misspelling
+        let linker = Linker::new([("charlés", 1), ("línea", 2)]);
+        assert!(linker.lookup("charles").is_empty());
+        assert!(linker.lookup("linea").is_empty());
+        assert_eq!(linker.lookup("charlés"), [1]);
+        assert_eq!(linker.lookup("línea"), [2]);
     }
 
     #[test]

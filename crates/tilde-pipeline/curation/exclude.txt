@@ -1,0 +1,114 @@
+# Written forms that are not Spanish words, though the subtitles are full of
+# them and Wiktionary gives each a rare Spanish reading: names ("charles" is
+# also a form of charlar), English ("to", "boy"), accentless misspellings
+# ("tenia" for tenía), verbs that exist only on paper ("lindar" would take
+# every "lindo") and single letters. A form listed here counts for nothing
+# and is never a word of its own, so its count can't pass to a homograph
+# either. Nor is it stored as a form of one ("china" under chino), so a search
+# or an example sentence with it finds no word. One form per line.
+
+# names
+bob
+tony
+maría
+charles
+lisa
+pete
+logan
+lucas
+elena
+florida
+california
+áfrica
+roma
+china
+cia
+gene
+newton
+yuri
+
+# English
+to
+so
+am
+boy
+rob
+man
+miss
+do
+re
+go
+green
+won
+out
+like
+post
+hot
+strike
+pope
+troy
+dong
+when
+times
+cool
+okey
+fuck
+fucking
+sorry
+crazy
+nice
+smart
+game
+play
+tell
+still
+hold
+cloud
+crew
+squad
+shake
+center
+blunt
+ew
+jacks
+prime
+royal
+stack
+
+# misspellings, and lemmas that only take a real word's forms
+tenia
+linea
+lineas
+record
+lindar
+dolar
+
+# letters (a, e, o, u and y are words)
+b
+c
+d
+f
+g
+h
+i
+j
+k
+l
+m
+n
+ñ
+p
+q
+r
+s
+t
+v
+w
+x
+z
+á
+é
+í
+ó
+ú
+ü

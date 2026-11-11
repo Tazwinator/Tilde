@@ -1,13 +1,21 @@
 # Hand-written English glosses for words whose Wiktionary glosses read badly
-# out of context (mostly articles and pronouns). lemma<TAB>gloss.
-# Everything else comes from Wiktionary.
+# out of context (mostly articles and pronouns). Everything else comes from
+# Wiktionary.
+#
+# lemma<TAB>gloss, or lemma<TAB>gloss<TAB>pos when the part of speech the
+# pipeline would pick (that of the first Wiktionary entry with a usable
+# gloss) isn't the one the gloss describes: "veces" is first a preposition
+# there. pos is one of: noun verb adj adv pron det article prep conj
+# contraction num particle intj. A word with a pos other than verb gets no
+# conjugation table. The build stops on a malformed row, a word listed twice,
+# or a word that is also in exclude.txt.
 el	the
 la	the; her, it
 los	the; them
 las	the; them
 lo	it; the (+ adjective)
 un	a, an
-una	a, an; one
+una	a, an; one	article
 yo	I
 usted	you (formal)
 ustedes	you (plural)
@@ -16,11 +24,11 @@ sus	his, her, its, their, your
 esto	this
 eso	that
 aquello	that (over there)
-vale	okay; voucher
+vale	okay; voucher	intj
 bueno	good; well, okay
 hasta	until; up to; even
-chico	boy, kid; small
-sentido	sense, meaning; direction
+chico	boy, kid; small	noun
+sentido	sense, meaning; direction	noun
 intentar	to try, to attempt
 acerca	about (acerca de)
 ordenador	computer
@@ -49,14 +57,14 @@ persona	person
 señora	lady, madam; Mrs; wife
 pedir	to ask for, to order
 mano	hand
-primero	first
+primero	first	adj
 chica	girl
-primera	first; first class
-veces	times (plural of vez)
+primera	first; first class	adj
+veces	times (plural of vez)	noun
 doctor	doctor
 cuenta	bill; account; count
 contar	to count; to tell
-nueva	new (feminine); news
+nueva	new (feminine); news	adj
 jefe	boss; chief, head
 señorita	young woman; Miss
 punto	point; dot; full stop
@@ -68,19 +76,19 @@ clase	class; lesson; kind, sort
 teléfono	telephone, phone
 escuela	school
 luz	light; electricity
-idiota	idiot; idiotic
-par	pair, couple; even
+idiota	idiot; idiotic	noun
+par	pair, couple; even	noun
 oído	hearing; ear
 noticia	news, piece of news
 parar	to stop, to halt
-asesino	murderer, killer; murderous
-real	real; royal
+asesino	murderer, killer; murderous	noun
+real	real; royal	adj
 derecho	right; law; straight
-mala	bad (feminine of malo)
-café	coffee; café; brown
-mía	mine, my
+mala	bad (feminine of malo)	adj
+café	coffee; café; brown	noun
+mía	mine, my	pron
 daño	damage, harm
-cual	which; who; like, as
+cual	which; who; like, as	pron
 blanco	white; target
 bailar	to dance
 control	control; check, checkpoint
@@ -89,19 +97,19 @@ caja	box, case; checkout, till
 ley	law
 acercar	to bring closer; to come closer
 cámara	camera; chamber
-sino	but, rather; fate
+sino	but, rather; fate	conj
 enfermo	sick, ill; patient
-alrededor	around; surroundings
+alrededor	around; surroundings	adv
 estrella	star
-placer	pleasure; to please
-vestido	dress; dressed
+placer	pleasure	noun
+vestido	dress; dressed	noun
 broma	joke, prank
 través	a través de: through, across
 invitar	to invite; to treat (to pay for)
 alma	soul
 entendido	understood; expert
 enterar	to find out (enterarse); to inform
-enemigo	enemy; hostile
+enemigo	enemy; hostile	noun
 carajo	hell, damn (vulgar)
 dejado	left (behind); sloppy
 trasero	back, rear; backside
@@ -112,15 +120,15 @@ navidad	Christmas
 embargo	sin embargo: however; embargo
 acá	here
 director	director; manager; head teacher
-juro	I swear (from jurar)
+juro	I swear (from jurar)	verb
 cerebro	brain
 tía	aunt; girl, woman
 nervioso	nervous, on edge
-tuya	yours
+tuya	yours	pron
 oro	gold
-guapo	good-looking, handsome
+guapo	good-looking, handsome	adj
 vieja	old woman; old (feminine)
-segunda	second (feminine); second gear
+segunda	second (feminine); second gear	adj
 luna	moon
 árbol	tree
 carne	meat; flesh
@@ -136,77 +144,76 @@ radio	radio; radius
 normal	normal, usual
 papá	dad
 comer	to eat; to have lunch
-alta	tall, high (feminine); discharge
-ladrón	thief, burglar
+alta	tall, high (feminine); discharge	adj
+ladrón	thief, burglar	noun
 menudo	small, tiny (a menudo: often)
-periódico	newspaper; periodic
+periódico	newspaper; periodic	noun
 lastimar	to hurt, to injure
 traído	brought
 repente	de repente: suddenly
 escrito	written; piece of writing
-cerdo	pig; pork; dirty
-blanca	white (feminine)
-local	local; premises
+cerdo	pig; pork; dirty	noun
+blanca	white (feminine)	adj
+local	local; premises	adj
 santa	saint (feminine); holy
 damas	ladies; draughts
 pieza	piece, part; room
 apoyar	to support; to lean
-amante	lover; loving
+amante	lover; loving	noun
 dama	lady; queen (chess, cards)
 video	video
 propiedad	property, ownership
 señoría	your honour, your lordship
 disco	disc, record; disco, club
-jurado	jury; sworn
+jurado	jury; sworn	noun
 cabrón	bastard (vulgar); billy goat
 aquellos	those
 clases	classes, lessons
-sujeto	subject; guy, individual; held
+sujeto	subject; guy, individual; held	noun
 explotar	to explode; to exploit
-fiscal	prosecutor; fiscal
-motor	engine, motor
-roja	red (feminine)
-negra	black (feminine); crotchet
+fiscal	prosecutor; fiscal	noun
+motor	engine, motor	noun
+roja	red (feminine)	adj
+negra	black (feminine); crotchet	adj
 humor	humour; mood
-tantos	so many
+tantos	so many	det
 actor	actor
 polvo	dust; powder
-empleado	employee; employed
-mio	mine, my
+empleado	employee; employed	noun
+mio	mine, my	pron
 ocurrido	happened
 aeropuerto	airport
-móvil	mobile phone; mobile
-tamaño	size
-federal	federal
+móvil	mobile phone; mobile	noun
+tamaño	size	noun
+federal	federal	adj
 alcohol	alcohol
 muñeca	wrist; doll
-anciano	old man; elderly
-ganador	winner; winning
-trabajador	worker; hard-working
+anciano	old man; elderly	noun
+ganador	winner; winning	noun
+trabajador	worker; hard-working	noun
 ignorar	to ignore; to not know
 mundial	world, worldwide; World Cup
 cura	priest; cure
 milla	mile
-centavo	cent
+centavo	cent	noun
 rumor	rumour; murmur
-dolar	dollar
-clara	clear (feminine); egg white
+clara	clear (feminine); egg white	adj
 bordo	a bordo: on board
 japonés	Japanese
 comido	eaten
 pescado	fish (as food)
-whisky	whisky
+whisky	whisky	noun
 cuadro	painting, picture; square
-perdedor	loser; losing
+perdedor	loser; losing	noun
 cruel	cruel
 vueltas	turns; change (money)
-popular	popular
+popular	popular	adj
 amarillo	yellow
-plata	silver; money
-franco	frank, candid; franc
+plata	silver; money	noun
+franco	frank, candid; franc	adj
 medios	means; media
 oreja	ear
-guerrero	warrior; warlike
+guerrero	warrior; warlike	noun
 kilo	kilo
 crisis	crisis
 entrado	entered
@@ -217,3 +224,61 @@ falda	skirt; brisket
 mariposa	butterfly; butterfly stroke
 burro	donkey; dunce
 banana	banana
+
+# Common words none of whose Wiktionary senses yields a gloss (usage notes
+# only), so they would be missing from the list.
+ni	nor, neither; not even	conj
+ti	you (after a preposition)	pron
+venga	come on!; go on	intj
+
+# Words the rules gloss or class badly: a cognate that hides the commoner
+# meaning ("final" is first "end"), a verb filed under its rarer adjective
+# homograph ("anular"), a regional or rude sense in front.
+tomar	to take; to have, to drink	verb
+final	end; final	noun
+vaya	wow!, well!; what a...!	intj
+personal	personal; staff, personnel	adj
+animal	animal	noun
+ex	ex (former partner); former, ex-	noun
+central	central; headquarters; power station	adj
+material	material	noun
+alcalde	mayor	noun
+galleta	biscuit, cookie	noun
+teta	breast, boob, tit	noun
+moral	moral; morals; morale	adj
+temporal	temporary; temporal; storm	adj
+combustible	fuel; combustible	noun
+capital	capital (city); capital (money)	noun
+coca	coca (plant); coke, cocaine	noun
+pa	for, to (colloquial form of para)	prep
+postal	postcard; postal	noun
+circular	to circulate, to move along; circular	verb
+titular	headline; holder; regular, official	noun
+lunar	lunar; mole, beauty spot; polka dot	adj
+monitor	monitor, screen; instructor, coach	noun
+molar	to be cool, to rock (colloquial); molar	verb
+anular	to cancel, to annul; ring finger	verb
+articular	to articulate; to coordinate	verb
+formular	to formulate, to express	verb
+conciliar	to reconcile; to get to sleep (el sueño)	verb
+penal	penal, criminal; prison	adj
+mineral	mineral; ore	noun
+editorial	publisher; editorial	noun
+fusible	fuse	noun
+sable	sabre, cutlass	noun
+germen	germ; seed, origin	noun
+tráiler	trailer (film preview); articulated lorry	noun
+loca	crazy, mad (feminine of loco); madwoman	adj
+niñita	little girl	noun
+fa	fa (musical note)	noun
+chiquito	tiny, very small; little one	adj
+
+# Words flagged in vulgar.txt whose Wiktionary gloss is only the innocent
+# sense: say what the word is flagged for.
+follar	to fuck (vulgar)	verb
+polla	cock, dick (vulgar); pullet	noun
+maricón	faggot, queer (offensive slur)	noun
+capullo	cocoon; bud; jerk, idiot (vulgar)	noun
+pendejo	asshole, idiot (vulgar)	noun
+hostia	host (communion wafer); bloody hell! (vulgar)	noun
+verga	cock, dick (vulgar); yard (of a sail)	noun

@@ -17,6 +17,7 @@ cuesta
 deja
 dejo
 detente
+dobla
 elegido
 empiece
 escucha
@@ -40,12 +41,14 @@ pare
 partes
 pasa
 pienso
+polis
 pongo
 queda
 quedo
 quita
 saca
 salvado
+teme
 tira
 toca
 toma
