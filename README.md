@@ -107,6 +107,9 @@ formatted with it).
 How the pieces fit together (the app, its two databases, sessions, speech,
 backups and the content pipeline) is described in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+What was decided along the way and why, what has never been checked in the
+real app and what is known to be imperfect is in
+[docs/STATUS.md](docs/STATUS.md).
 
 ## Data sources & attribution
 
