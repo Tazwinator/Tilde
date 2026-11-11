@@ -236,13 +236,7 @@ fn mine(app: &tauri::App<MockRuntime>, title: &str, text: &str) -> ImportReport 
 
 /// Whether a mined sentence is linked to the word with exactly this lemma.
 fn mined_word(app: &tauri::App<MockRuntime>, lemma: &str) -> bool {
-    // the search also looks inside glosses and longer lemmas: "té" finds
-    // "saltar" (to sauté) first
-    let word_id = word_search(app.state(), lemma.into(), 20)
-        .into_iter()
-        .find(|w| w.lemma == lemma)
-        .unwrap_or_else(|| panic!("no word {lemma}"))
-        .word_id;
+    let word_id = word_id(app, lemma);
     let state = app.state::<AppState>();
     let conn = state.user.lock().unwrap();
     conn.query_row("SELECT EXISTS(SELECT 1 FROM mined_words WHERE word_id = ?1)", [word_id], |r| r.get(0))
@@ -2287,6 +2281,269 @@ fn word_hit_marks_cards_in_progress() {
         word_reset(app.state(), word.word_id).unwrap();
         assert!(!casa().in_deck);
     });
+}
+
+// --- Explorar: search -----------------------------------------------------------
+
+/// The bundled dictionary, for what no command shows.
+fn dictionary() -> ContentDb {
+    ContentDb::open(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/resources/content.db"))).unwrap()
+}
+
+/// The lemmas a search finds, best first.
+fn found(app: &tauri::App<MockRuntime>, query: &str, limit: i64) -> Vec<String> {
+    word_search(app.state(), query.into(), limit).into_iter().map(|w| w.lemma).collect()
+}
+
+#[test]
+fn search_finds_words_typed_without_accents() {
+    with_app(|app| {
+        for (typed, word) in [("tambien", "también"), ("arbol", "árbol"), ("nino", "niño"), ("espanol", "español"), (" ARBOL ", "árbol")] {
+            assert_eq!(found(app, typed, 5).first().map(String::as_str), Some(word), "{typed}");
+        }
+    });
+}
+
+#[test]
+fn search_finds_the_lemma_of_an_inflected_form() {
+    with_app(|app| {
+        assert_eq!(found(app, "tengo", 5)[0], "tener");
+        assert_eq!(found(app, "vas", 5)[0], "ir");
+        // a form of two verbs: both, the commoner first
+        assert_eq!(found(app, "fue", 2), ["ser", "ir"]);
+        // and both before a commoner word that only starts so
+        assert_eq!(found(app, "pare", 3), ["parar", "parir", "parecer"]);
+        // and a form typed without its accent
+        assert_eq!(found(app, "comio", 3)[0], "comer");
+        assert_eq!(found(app, "ninos", 3), ["niño"]);
+    });
+}
+
+#[test]
+fn search_puts_the_exact_lemma_first() {
+    with_app(|app| {
+        // short words, which are inside a great many others and their meanings
+        for lemma in ["ave", "fe", "mar", "o", "e", "u", "ex", "sol", "red"] {
+            assert_eq!(found(app, lemma, 5)[0], lemma);
+        }
+        // and any word at all: every 25th of the commonest
+        let sample: Vec<(i64, String)> = {
+            let content = dictionary();
+            let mut stmt = content.conn.prepare("SELECT rank, lemma FROM words WHERE rank <= 3000 AND rank % 25 = 0 ORDER BY rank").unwrap();
+            let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+            rows.map(|r| r.unwrap()).collect()
+        };
+        assert!(sample.len() >= 100, "{} words", sample.len());
+        for (rank, lemma) in &sample {
+            // (by rank: the list has words nobody wants printed)
+            assert_eq!(found(app, lemma, 5).first(), Some(lemma), "the word of rank {rank} is not first when searched for");
+        }
+    });
+}
+
+#[test]
+fn search_prefers_the_spelling_as_typed() {
+    with_app(|app| {
+        assert_eq!(found(app, "ano", 2), ["ano", "año"]);
+        assert_eq!(found(app, "año", 2), ["año", "ano"]);
+        // a verb form typed with its accent: the verb, and the noun that is
+        // spelled so without it
+        let mut canto = found(app, "cantó", 2);
+        canto.sort();
+        assert_eq!(canto, ["cantar", "canto"]);
+        // Among the words it is a form of, those that have it as typed come
+        // first, however common the others: "esta" is a form of "este", and
+        // "está" one of "estar".
+        assert_eq!(found(app, "esta", 3), ["esta", "este", "estar"]);
+        assert_eq!(found(app, "está", 3), ["esta", "estar", "este"]);
+    });
+}
+
+#[test]
+fn search_matches_english_glosses_as_whole_words() {
+    with_app(|app| {
+        assert_eq!(found(app, "have", 2), ["haber", "tener"]);
+        assert_eq!(found(app, "to have", 2), ["haber", "tener"]);
+        // "eat" is in "great" and "weather" as well, the glosses of commoner words
+        assert_eq!(found(app, "eat", 1), ["comer"]);
+        // and "ave" is in "to have": found for it, but as a piece of a word
+        // only, after the word itself and those that start with it
+        let ave = found(app, "ave", 50);
+        let at = |lemma: &str| ave.iter().position(|l| l == lemma).unwrap_or_else(|| panic!("{lemma} is not found for \"ave\": {ave:?}"));
+        assert_eq!(at("ave"), 0);
+        assert!(at("averiguar") < at("haber"), "{ave:?}");
+    });
+}
+
+#[test]
+fn empty_search_lists_the_commonest_words() {
+    with_app(|app| {
+        for nothing in ["", "   "] {
+            let ranks: Vec<i64> = word_search(app.state(), nothing.into(), 50).iter().map(|w| w.rank).collect();
+            assert_eq!(ranks, (1..=50).collect::<Vec<i64>>(), "{nothing:?}");
+        }
+        // only nothing does that: SQL's wildcards are characters like any other
+        assert!(found(app, "%", 5).is_empty() && found(app, "_", 5).is_empty());
+        assert!(found(app, "zzzz", 5).is_empty());
+    });
+}
+
+#[test]
+fn a_negative_search_limit_is_no_limit() {
+    with_app(|app| {
+        // as in SQL, which the limit was once handed to as it came
+        let (some, all) = (found(app, "casa", 3), found(app, "casa", -1));
+        assert_eq!(some.len(), 3);
+        assert!(all.len() > 3 && all[..3] == some[..], "{} found", all.len());
+        assert!(found(app, "", -1).len() > 50);
+    });
+}
+
+#[test]
+fn content_search_keys_are_current() {
+    // The dictionary stores every lemma and form as `search_key` folds it. A
+    // change to the folding without a rebuild (or the other way round) would
+    // leave words that can no longer be found.
+    let content = dictionary();
+    let mut stmt = content.conn.prepare("SELECT lemma, lemma_key FROM words").unwrap();
+    let words: Vec<(String, String)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(|r| r.unwrap()).collect();
+    assert!(words.len() > 10_000);
+    let stale = words.iter().filter(|(lemma, key)| tilde_core::search_key(lemma) != *key).count();
+    assert_eq!(stale, 0, "lemmas whose stored key is not their search key");
+
+    // a form that reads the same folded needs no key; every other has one,
+    // and there are no keys but those
+    let mut stmt = content.conn.prepare("SELECT form, word_id FROM forms").unwrap();
+    let forms: Vec<(String, i64)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(|r| r.unwrap()).collect();
+    let needed: HashSet<(String, i64)> = forms
+        .into_iter()
+        .filter_map(|(form, word_id)| {
+            let key = tilde_core::search_key(&form);
+            (key != form).then_some((key, word_id))
+        })
+        .collect();
+    let mut stmt = content.conn.prepare("SELECT key, word_id FROM form_keys").unwrap();
+    let stored: HashSet<(String, i64)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(|r| r.unwrap()).collect();
+    assert!(needed.len() > 10_000);
+    assert_eq!((needed.difference(&stored).count(), stored.difference(&needed).count()), (0, 0), "(forms without their key, keys of no form)");
+}
+
+// --- example sentences -----------------------------------------------------------
+
+#[test]
+fn examples_are_about_the_word_on_the_card() {
+    let content = dictionary();
+    let id = |lemma: &str| content.word_ids_by_lemma(lemma)[0];
+    // Words that were shown sentences about another word: "padres" was
+    // listed with "madre", "ellos" with "ella" and "los" with "la", as if a
+    // counterpart were a form.
+    for lemma in ["madre", "ella", "la", "tía", "comer"] {
+        let own: HashSet<String> = content.forms_of(id(lemma)).into_iter().map(|(form, _)| form).collect();
+        let examples = content.sentences_for_word(id(lemma), 12);
+        assert_eq!(examples.len(), 12, "{lemma}");
+        for s in &examples {
+            assert!(own.contains(&s.form), "{lemma}: \"{}\" is shown for its \"{}\"", s.es, s.form);
+            assert!(s.es.to_lowercase().contains(&s.form), "{lemma}: no \"{}\" in \"{}\"", s.form, s.es);
+        }
+    }
+    // and a word spelled like a form of a commoner one: the wine, not "he came"
+    let vino = content.sentences_for_word(id("vino"), 1).remove(0);
+    assert!(vino.en.as_deref().unwrap_or("").to_lowercase().contains("wine"), "{} / {:?}", vino.es, vino.en);
+}
+
+#[test]
+fn no_link_rides_on_another_words_headword_unconfirmed() {
+    // A token that is a word's own name is that word's, unless the English
+    // sentence shows the meaning of another word it is a form of.
+    let content = dictionary();
+    let riding: i64 = content
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM sentence_links l JOIN words w ON w.id = l.word_id
+             WHERE l.quality = 1 AND l.form != w.lemma
+               AND EXISTS (SELECT 1 FROM words o WHERE o.lemma = l.form AND o.id != w.id)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(riding, 0);
+    // (the links there are to count)
+    let (links, confirmed): (i64, i64) =
+        content.conn.query_row("SELECT COUNT(*), SUM(quality = 0) FROM sentence_links", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    assert!(links > 100_000 && confirmed > 0 && confirmed < links, "{confirmed} of {links} links are confirmed");
+}
+
+#[test]
+fn e_is_linked_only_where_e_is_written() {
+    // "e" is "and" before an i-sound; the letter's plural "es" once gave it
+    // every sentence with "es" in it
+    let content = dictionary();
+    let e = content.word_ids_by_lemma("e")[0];
+    let mut stmt = content.conn.prepare("SELECT form, COUNT(*) FROM sentence_links WHERE word_id = ?1 GROUP BY form").unwrap();
+    let forms: Vec<(String, i64)> = stmt.query_map([e], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(|r| r.unwrap()).collect();
+    assert!(matches!(forms.as_slice(), [(form, links)] if form == "e" && *links > 0), "{forms:?}");
+}
+
+#[test]
+fn the_ungrammatical_el_example_is_gone() {
+    let content = dictionary();
+    let there: i64 = content
+        .conn
+        .query_row("SELECT COUNT(*) FROM sentences WHERE LOWER(TRIM(es)) = 'depende el contexto.'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(there, 0);
+}
+
+#[test]
+fn every_top_2000_word_has_an_example() {
+    let content = dictionary();
+    let mut stmt = content.conn.prepare("SELECT id, rank FROM words WHERE rank <= 2000 ORDER BY rank").unwrap();
+    let words: Vec<(i64, i64)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(|r| r.unwrap()).collect();
+    assert_eq!(words.len(), 2000);
+    // (by rank: the list has words nobody wants printed)
+    let without: Vec<i64> =
+        words.iter().filter(|(id, _)| content.sentences_for_word(*id, 1).is_empty()).map(|(_, rank)| *rank).collect();
+    // Tatoeba has no sentence with this one. When it has, or when the word
+    // leaves the list, this is to say "none".
+    let excused: Vec<i64> = ["inspector"]
+        .into_iter()
+        .map(|lemma| {
+            let id = content.word_ids_by_lemma(lemma).first().copied();
+            id.and_then(|id| content.word(id)).unwrap_or_else(|| panic!("\"{lemma}\" is not a word any more: take it off this list")).rank
+        })
+        .collect();
+    assert_eq!(without, excused, "the ranks of the words without an example, and of those this list excuses: bring the list up to date");
+}
+
+// --- Spanish definitions ----------------------------------------------------------
+
+#[test]
+fn common_words_have_their_everyday_spanish_definition() {
+    let content = dictionary();
+    let definition = |lemma: &str| {
+        let id = content.word_ids_by_lemma(lemma).first().copied();
+        id.and_then(|id| content.word(id)).unwrap_or_else(|| panic!("\"{lemma}\" is not a word any more")).gloss_es
+    };
+    // each once had the first sense Wikcionario lists, whatever it was: the
+    // horse-drawn carriage for "coche"
+    for (lemma, says) in [("coche", "motor"), ("avión", "aéreo"), ("broma", "risa"), ("casa", "vivienda")] {
+        let text = definition(lemma).unwrap_or_else(|| panic!("{lemma} has no Spanish definition"));
+        assert!(text.contains(says), "{lemma}: {text}");
+    }
+    assert!(definition("vosotros").is_some());
+    // none carries Wikcionario's markup: table cells, lists of related
+    // words, footnote marks
+    let marked: i64 = content
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM words WHERE instr(gloss_es, '¦') > 0 OR instr(gloss_es, ':*') > 0 OR instr(gloss_es, '^(') > 0",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(marked, 0);
+    let defined: i64 = content.conn.query_row("SELECT COUNT(*) FROM words WHERE gloss_es IS NOT NULL", [], |r| r.get(0)).unwrap();
+    assert!(defined > 9_000, "{defined} words have a Spanish definition");
 }
 
 /// Field names of an `export interface` in `src/lib/contract.ts`.

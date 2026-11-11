@@ -1,6 +1,6 @@
 //! Session generation, scoring and gamification.
 
-use crate::content::{gloss_parts, ContentDb};
+use crate::content::{gloss_parts, ContentDb, Example};
 use crate::deck;
 use crate::tts::Tts;
 use rusqlite::Connection;
@@ -373,8 +373,8 @@ fn gen_reviews(ctx: &mut GenCtx, n: usize) -> (Vec<Round>, Vec<&'static str>) {
                 word_id: wid,
                 es: w.lemma.clone(),
                 en: gloss_of(&w, &ctx.definition_lang),
-                example_es: sentences.first().map(|(_, es, _)| es.clone()),
-                example_en: sentences.first().and_then(|(_, _, en)| en.clone()),
+                example_es: sentences.first().map(|s| s.es.clone()),
+                example_en: sentences.first().and_then(|s| s.en.clone()),
                 audio_base64: ctx.audio(&w.lemma),
             });
             types.push("review_card");
@@ -476,8 +476,8 @@ fn gen_mixed(ctx: &mut GenCtx, kind: SessionKind) -> (Vec<Round>, Vec<&'static s
             rounds.push(Round::NewWord {
                 id: rid,
                 word: w.clone(),
-                example_es: sentences.first().map(|(_, es, _)| es.clone()),
-                example_en: sentences.first().and_then(|(_, _, en)| en.clone()),
+                example_es: sentences.first().map(|s| s.es.clone()),
+                example_en: sentences.first().and_then(|s| s.en.clone()),
                 audio_base64: ctx.audio(&w.lemma),
             });
             types.push("new_word");
@@ -512,10 +512,7 @@ fn gen_mixed(ctx: &mut GenCtx, kind: SessionKind) -> (Vec<Round>, Vec<&'static s
 
     for w in pick(&game_pool, n_games) {
         let sentences = ctx.content.sentences_for_word(w.word_id, 4);
-        let usable: Vec<&(i64, String, Option<String>)> = sentences
-            .iter()
-            .filter(|(sid, _, _)| !ctx.used_sentences.contains(sid))
-            .collect();
+        let usable: Vec<&Example> = sentences.iter().filter(|s| !ctx.used_sentences.contains(&s.id)).collect();
 
         let kind_chosen = (rid as usize) % 4;
         if conj_used < max_conj
@@ -551,18 +548,16 @@ fn gen_mixed(ctx: &mut GenCtx, kind: SessionKind) -> (Vec<Round>, Vec<&'static s
                 types.push(ty);
             }
             2 => {
-                let build = usable
-                    .iter()
-                    .find_map(|(sid, es, en)| build_tiles(es).map(|tiles| (*sid, es, en, tiles)));
-                if let Some((sid, es, en, tiles)) = build {
-                    ctx.used_sentences.insert(sid);
+                let build = usable.iter().find_map(|s| build_tiles(&s.es).map(|tiles| (s, tiles)));
+                if let Some((s, tiles)) = build {
+                    ctx.used_sentences.insert(s.id);
                     rounds.push(Round::Build {
                         id: rid,
                         word_id: w.word_id,
-                        sentence_es: es.clone(),
-                        sentence_en: en.clone().unwrap_or_default(),
+                        sentence_es: s.es.clone(),
+                        sentence_en: s.en.clone().unwrap_or_default(),
                         tiles,
-                        answer: es.clone(),
+                        answer: s.es.clone(),
                     });
                     types.push("build");
                 } else {
@@ -572,9 +567,7 @@ fn gen_mixed(ctx: &mut GenCtx, kind: SessionKind) -> (Vec<Round>, Vec<&'static s
                 }
             }
             _ => {
-                let cloze = usable.iter().find_map(|(sid, es, en)| {
-                    cloze_round(ctx, rid, &w, es, en.as_deref()).map(|r| (*sid, r))
-                });
+                let cloze = usable.iter().find_map(|s| cloze_round(ctx, rid, &w, s).map(|r| (s.id, r)));
                 let (round, ty) = match cloze {
                     Some((sid, round)) => {
                         ctx.used_sentences.insert(sid);
@@ -615,8 +608,8 @@ fn gen_mixed(ctx: &mut GenCtx, kind: SessionKind) -> (Vec<Round>, Vec<&'static s
                 word_id: wid,
                 es: w.lemma.clone(),
                 en: gloss_of(&w, &ctx.definition_lang),
-                example_es: sentences.first().map(|(_, es, _)| es.clone()),
-                example_en: sentences.first().and_then(|(_, _, en)| en.clone()),
+                example_es: sentences.first().map(|s| s.es.clone()),
+                example_en: sentences.first().and_then(|s| s.en.clone()),
                 audio_base64: ctx.audio(&w.lemma),
             });
             types.push("review_card");
@@ -685,8 +678,8 @@ fn listen_round(ctx: &mut GenCtx, id: i64, w: &WordCard) -> (Round, &'static str
 
 /// The longest sentence given as a dictation, in characters. It has to be
 /// held in the ear and typed out exactly. Common words rarely lack one this
-/// short among the four example sentences looked at: 11 of the 2,000 most
-/// frequent did when this was set.
+/// short among the four example sentences looked at: fewer than twenty of
+/// the 2,000 most frequent that are taught do.
 const DICTATION_MAX_CHARS: usize = 40;
 
 /// Hear a sentence with the word in it, write it down. `None` when there is
@@ -696,8 +689,8 @@ fn dictation_round(ctx: &mut GenCtx, id: i64, w: &WordCard) -> Option<(Round, &'
     if !ctx.tts.available() {
         return None;
     }
-    let (sid, es, _) = ctx.content.sentences_for_word(w.word_id, 4).into_iter().find(|(sid, es, _)| {
-        !ctx.used_sentences.contains(sid) && es.chars().count() <= DICTATION_MAX_CHARS
+    let Example { id: sid, es, .. } = ctx.content.sentences_for_word(w.word_id, 4).into_iter().find(|s| {
+        !ctx.used_sentences.contains(&s.id) && s.es.chars().count() <= DICTATION_MAX_CHARS
     })?;
     ctx.used_sentences.insert(sid);
     Some((
@@ -715,22 +708,18 @@ fn dictation_round(ctx: &mut GenCtx, id: i64, w: &WordCard) -> Option<(Round, &'
 /// Blanks the word as it appears in the sentence ("comió", not "comer") and
 /// offers similar words in the same form as distractors. `None` when the
 /// sentence can't make a fair question of it.
-fn cloze_round(
-    ctx: &mut GenCtx,
-    id: i64,
-    w: &WordCard,
-    es: &str,
-    en: Option<&str>,
-) -> Option<(Round, &'static str)> {
+fn cloze_round(ctx: &mut GenCtx, id: i64, w: &WordCard, example: &Example) -> Option<(Round, &'static str)> {
+    let es = example.es.as_str();
     // The translation is shown with the gap: often more than one of the
     // options makes a good Spanish sentence, and only it says which is meant.
-    let en = en.map(str::trim).filter(|en| !en.is_empty())?;
+    let en = example.en.as_deref().map(str::trim).filter(|en| !en.is_empty())?;
+    // The gap is the token the sentence was linked to the word by. The first
+    // token that is spelled like a form of the word may be another word: in
+    // "El policía pitó al coche para que parara", an example of "parar",
+    // that is "para".
+    let target = example.form.as_str();
+    let (start, token) = words_in(es).into_iter().find(|(_, token)| token.to_lowercase() == target)?;
     let forms = ctx.content.forms_of(w.word_id);
-    let (start, token) = words_in(es).into_iter().find(|(_, token)| {
-        let lower = token.to_lowercase();
-        forms.iter().any(|(form, _)| *form == lower)
-    })?;
-    let target = token.to_lowercase();
     // The form to put the distractors in. A spelling that is listed with the
     // word without a place in its tables ("dame", "creerlo") has none: the
     // others would stand next to it as bare infinitives, and the only option
@@ -738,10 +727,10 @@ fn cloze_round(
     let tag = if target == w.lemma.to_lowercase() {
         ""
     } else {
-        forms.iter().find(|(form, tag)| *form == target && !tag.is_empty()).map(|(_, tag)| tag.as_str())?
+        forms.iter().find(|(form, tag)| form == target && !tag.is_empty()).map(|(_, tag)| tag.as_str())?
     };
     let said = spaced_words(en);
-    let mut options = vec![target.clone()];
+    let mut options = vec![target.to_string()];
     for d in ctx.content.similar_words(w, 12) {
         if options.len() == 4 {
             break;
@@ -1261,12 +1250,16 @@ mod tests {
 
     /// A context with definitions in `lang` ("en", or "es" for Español primero).
     fn with_ctx_in<T>(lang: &str, tts: impl FnOnce(&std::path::Path) -> Tts, f: impl FnOnce(&mut GenCtx) -> T) -> T {
-        let content = content();
+        with_ctx_over(&content(), lang, tts, f)
+    }
+
+    /// The same over a dictionary the test chose: the bundled one, or one it made.
+    fn with_ctx_over<T>(content: &ContentDb, lang: &str, tts: impl FnOnce(&std::path::Path) -> Tts, f: impl FnOnce(&mut GenCtx) -> T) -> T {
         let (dir, user) = fresh_user();
         let tts = tts(&dir.0);
         let (mut used, mut introduced) = (HashSet::new(), HashSet::new());
         let mut ctx = GenCtx {
-            content: &content,
+            content,
             user: &user,
             tts: &tts,
             definition_lang: lang.into(),
@@ -1282,12 +1275,18 @@ mod tests {
         content.word(id).unwrap()
     }
 
+    /// An example sentence as the dictionary hands it over: `form` is the
+    /// token it is linked to its word by.
+    fn example(es: &str, en: Option<&str>, form: &str) -> Example {
+        Example { id: 0, es: es.into(), en: en.map(String::from), form: form.into() }
+    }
+
     #[test]
     fn cloze_blanks_the_inflected_form_with_distractors_in_the_same_form() {
         with_ctx(|ctx| {
             let tener = word(ctx.content, "tener");
-            let (round, _) =
-                cloze_round(ctx, 0, &tener, "Yo tengo un perro muy grande.", Some("I have a very big dog.")).unwrap();
+            let dog = example("Yo tengo un perro muy grande.", Some("I have a very big dog."), "tengo");
+            let (round, _) = cloze_round(ctx, 0, &tener, &dog).unwrap();
             let Round::Cloze { sentence_es, options, answer_index, .. } = round else {
                 panic!("not a cloze round")
             };
@@ -1305,7 +1304,47 @@ mod tests {
                     .unwrap();
                 assert!(same_form, "{o} is not a presente/yo form: {options:?}");
             }
-            assert!(cloze_round(ctx, 0, &tener, "No hay nada aquí.", Some("There is nothing here.")).is_none());
+            // no gap without the linked token in the sentence, or for a token
+            // that is no form of the word
+            let nothing = |form| example("No hay nada aquí.", Some("There is nothing here."), form);
+            assert!(cloze_round(ctx, 0, &tener, &nothing("tengo")).is_none());
+            assert!(cloze_round(ctx, 0, &tener, &nothing("hay")).is_none());
+            assert!(cloze_round(ctx, 0, &tener, &nothing("")).is_none());
+        });
+    }
+
+    #[test]
+    fn cloze_blanks_the_linked_token() {
+        // As older dictionaries had it: a noun's masculine listed among its
+        // forms, so that "padre" is a form of "madre".
+        let family = [(1, "madre", "padre", "mother"), (2, "tía", "tío", "aunt"), (3, "hermana", "hermano", "sister"), (4, "abuela", "abuelo", "grandmother")];
+        let mut rows = String::new();
+        for (id, lemma, masculine, gloss) in family {
+            rows += &format!(
+                "INSERT INTO words(id, lemma, lemma_key, pos, rank, gloss_en) VALUES ({id}, '{lemma}', '{lemma}', 'noun', {id}, '{gloss}');
+                 INSERT INTO forms(form, word_id, tag) VALUES ('{lemma}', {id}, ''), ('{lemma}s', {id}, 'plural'), ('{masculine}', {id}, 'masculine');"
+            );
+        }
+        rows += "INSERT INTO sentences(id, es, en) VALUES
+                   (1, 'Mi padre y mi madre.', 'My father and my mother.'),
+                   (2, 'Los padres y las madres.', 'The fathers and the mothers.');
+                 INSERT INTO sentence_links(sentence_id, word_id, form, quality) VALUES (1, 1, 'madre', 0), (2, 1, 'madres', 0);";
+        let content = ContentDb::scratch(&rows);
+        with_ctx_over(&content, "en", Tts::off, |ctx| {
+            let madre = word(ctx.content, "madre");
+            let gaps: Vec<(String, String)> = ctx
+                .content
+                .sentences_for_word(madre.word_id, 4)
+                .iter()
+                .map(|example| {
+                    let (round, _) = cloze_round(ctx, 0, &madre, example).expect("a cloze for each example");
+                    let Round::Cloze { sentence_es, options, answer_index, .. } = round else { panic!("not a cloze round") };
+                    (sentence_es, options[answer_index as usize].clone())
+                })
+                .collect();
+            // the gap is the word on the card, not the first token listed with it
+            let these = |gaps: [(&str, &str); 2]| gaps.map(|(es, answer)| (es.to_string(), answer.to_string())).to_vec();
+            assert_eq!(gaps, these([("Mi padre y mi ___.", "madre"), ("Los padres y las ___.", "madres")]));
         });
     }
 
@@ -1340,11 +1379,17 @@ mod tests {
             )
             .unwrap();
         assert!(flagged > 0);
-        assert!(content
-            .new_candidates(12_000, &HashSet::new())
-            .iter()
-            .chain(&content.verbs(2_000))
-            .all(|w| !["mierda", "joder", "computadora"].contains(&w.lemma.as_str())));
+        let taught = content.new_candidates(12_000, &HashSet::new());
+        // vulgar words, and one that Spain has another word for
+        for lemma in ["mierda", "joder", "computadora", "puto", "coño", "follar", "carajo"] {
+            // (by rank: a failing test is no place to print these)
+            let rank = word(&content, lemma).rank;
+            assert!(!taught.iter().chain(&content.verbs(2_000)).any(|w| w.lemma == lemma), "the flagged word of rank {rank} is taught");
+        }
+        // and two that were once taken for Latin American, and are said in Spain
+        for lemma in ["herir", "arrojar"] {
+            assert!(taught.iter().any(|w| w.lemma == lemma), "{lemma} is never taught");
+        }
     }
 
     #[test]
@@ -1378,9 +1423,9 @@ mod tests {
     fn wrong_answers_are_words_that_could_be_taught() {
         let content = content();
         let teachable: HashSet<i64> = content.new_candidates(usize::MAX, &HashSet::new()).iter().map(|w| w.word_id).collect();
-        // Words that are never taught (used only outside Spain, vulgar, stray
-        // letters), each next to its nearest neighbour of the same class:
-        // where it would be offered first, if it were offered at all.
+        // Words that are never taught (used only outside Spain, or vulgar),
+        // each next to its nearest neighbour of the same class: where it
+        // would be offered first, if it were offered at all.
         let mut left_out: Vec<WordCard> = content
             .word_ids()
             .iter()
@@ -1524,9 +1569,15 @@ mod tests {
             rows.map(|r| r.unwrap()).collect()
         };
         let (spanish, english) = (glosses("gloss_es"), glosses("gloss_en"));
-        let common = content.words_by_rank(1, 600);
-        // both kinds of word are among them
-        assert!(common.iter().any(|w| w.gloss_es.is_some()) && common.iter().any(|w| w.gloss_es.is_none()));
+        let mut common = content.words_by_rank(1, 600);
+        // Nearly all of those have a Spanish definition; the commonest words
+        // that have none are further down, so both kinds are looked at.
+        let seen: HashSet<i64> = common.iter().map(|w| w.word_id).collect();
+        let undefined = content.new_candidates(usize::MAX, &seen).into_iter().filter(|w| w.gloss_es.is_none());
+        common.extend(undefined.take(40));
+        let defined = common.iter().filter(|w| w.gloss_es.is_some()).count();
+        assert!(defined >= 300, "only {defined} of the words looked at have a Spanish definition");
+        assert!(common.len() - defined >= 40, "only {} of the words looked at have no Spanish definition", common.len() - defined);
 
         with_ctx_in("es", voice, |ctx| {
             let words = dictionary(ctx.content);
@@ -1659,6 +1710,8 @@ mod tests {
                 .collect();
         let (one, other) = defined_alike(&content);
         pool.extend([one, other]);
+        // the commonest word that has no Spanish definition
+        pool.extend(content.new_candidates(usize::MAX, &HashSet::new()).into_iter().find(|w| w.gloss_es.is_none()));
         let en = |w: &WordCard| gloss_parts(w.gloss_en.as_deref());
         let es = |w: &WordCard| gloss_parts(w.gloss_es.as_deref());
         // What the pool is made of: words that share an English meaning, two
@@ -1721,8 +1774,10 @@ mod tests {
         }
     }
 
-    fn cloze_options(ctx: &mut GenCtx, w: &WordCard, es: &str, en: &str) -> Option<(Vec<String>, String)> {
-        cloze_round(ctx, 0, w, es, Some(en)).map(|(round, _)| {
+    /// The options of a cloze round for `w` in a sentence that has it as
+    /// `form`, and the right one.
+    fn cloze_options(ctx: &mut GenCtx, w: &WordCard, es: &str, en: &str, form: &str) -> Option<(Vec<String>, String)> {
+        cloze_round(ctx, 0, w, &example(es, Some(en), form)).map(|(round, _)| {
             let (options, answer) = options_of(&round);
             (options.to_vec(), options[answer].clone())
         })
@@ -1733,9 +1788,9 @@ mod tests {
         with_ctx(|ctx| {
             let tener = word(ctx.content, "tener");
             let es = "Yo tengo un perro muy grande.";
-            assert!(cloze_round(ctx, 0, &tener, es, None).is_none());
-            assert!(cloze_round(ctx, 0, &tener, es, Some("  ")).is_none());
-            let Some((Round::Cloze { sentence_en, .. }, _)) = cloze_round(ctx, 0, &tener, es, Some("I have a very big dog.")) else {
+            assert!(cloze_round(ctx, 0, &tener, &example(es, None, "tengo")).is_none());
+            assert!(cloze_round(ctx, 0, &tener, &example(es, Some("  "), "tengo")).is_none());
+            let Some((Round::Cloze { sentence_en, .. }, _)) = cloze_round(ctx, 0, &tener, &example(es, Some("I have a very big dog."), "tengo")) else {
                 panic!("no cloze with a translation")
             };
             assert_eq!(sentence_en, "I have a very big dog.");
@@ -1743,17 +1798,17 @@ mod tests {
             // "completamente" would fit as well, and the translation says so
             let totalmente = word(ctx.content, "totalmente");
             let es = "Estaba totalmente agotado.";
-            let (unnamed, answer) = cloze_options(ctx, &totalmente, es, "He was utterly worn out.").unwrap();
+            let (unnamed, answer) = cloze_options(ctx, &totalmente, es, "He was utterly worn out.", "totalmente").unwrap();
             assert_eq!(answer, "totalmente");
             assert!(unnamed.iter().any(|o| o == "completamente"), "completamente is no distractor of totalmente any more: pick another pair");
-            let named = cloze_options(ctx, &totalmente, es, "He was completely worn out.");
+            let named = cloze_options(ctx, &totalmente, es, "He was completely worn out.", "totalmente");
             assert!(!named.unwrap().0.iter().any(|o| o == "completamente"));
 
             // the same for whichever words are offered: name one, and it goes
             for lemma in ["totalmente", "casa", "grande", "comer"] {
                 let w = word(ctx.content, lemma);
                 let es = format!("Dicen que {lemma} es la palabra.");
-                let (options, _) = cloze_options(ctx, &w, &es, "Zzz.").unwrap();
+                let (options, _) = cloze_options(ctx, &w, &es, "Zzz.", lemma).unwrap();
                 for d in options.iter().filter(|o| **o != lemma) {
                     let meaning = gloss_parts(word(ctx.content, d).gloss_en.as_deref())
                         .into_iter()
@@ -1761,17 +1816,17 @@ mod tests {
                         .unwrap();
                     // as a whole word or phrase, whatever is around it...
                     let en = format!("They say \"{}\"; is that the word?", meaning.to_uppercase());
-                    let left = cloze_options(ctx, &w, &es, &en).map(|(options, _)| options).unwrap_or_default();
+                    let left = cloze_options(ctx, &w, &es, &en, lemma).map(|(options, _)| options).unwrap_or_default();
                     assert!(!left.contains(d), "{lemma}: {d} is offered though the translation says \"{meaning}\"");
                     // ...but not as a piece of another word
                     let en = format!("They say x{meaning}x.");
-                    assert!(cloze_options(ctx, &w, &es, &en).unwrap().0.contains(d), "{lemma}: {d}");
+                    assert!(cloze_options(ctx, &w, &es, &en, lemma).unwrap().0.contains(d), "{lemma}: {d}");
                 }
             }
 
             // a translation that settles it already costs no options
             let me = word(ctx.content, "me");
-            let (options, answer) = cloze_options(ctx, &me, "No me sorprende.", "It doesn't surprise me.").unwrap();
+            let (options, answer) = cloze_options(ctx, &me, "No me sorprende.", "It doesn't surprise me.", "me").unwrap();
             assert_eq!(answer, "me");
             assert!(options.len() >= 3);
         });
@@ -1781,9 +1836,9 @@ mod tests {
     fn cloze_never_blanks_an_untagged_inflected_form() {
         with_ctx(|ctx| {
             let dar = word(ctx.content, "dar");
-            assert!(cloze_round(ctx, 0, &dar, "Dame tu dinero.", Some("Give me your money.")).is_none());
+            assert!(cloze_options(ctx, &dar, "Dame tu dinero.", "Give me your money.", "dame").is_none());
             // the word itself is still a gap, with other words as they are
-            let (options, answer) = cloze_options(ctx, &dar, "Te quiero dar un regalo.", "I want to give you a present.").unwrap();
+            let (options, answer) = cloze_options(ctx, &dar, "Te quiero dar un regalo.", "I want to give you a present.", "dar").unwrap();
             assert_eq!(answer, "dar");
             for o in &options {
                 assert!(!ctx.content.word_ids_by_lemma(o).is_empty(), "{o} is not a dictionary form: {options:?}");
@@ -1809,7 +1864,7 @@ mod tests {
             for (form, lemma) in &listed {
                 let w = word(ctx.content, lemma);
                 let es = format!("{form} zzz zzz zzz.");
-                assert!(cloze_round(ctx, 0, &w, &es, Some("Zzz zzz zzz.")).is_none(), "\"{form}\" was blanked for {lemma}");
+                assert!(cloze_options(ctx, &w, &es, "Zzz zzz zzz.", form).is_none(), "\"{form}\" was blanked for {lemma}");
             }
         });
     }
@@ -1997,30 +2052,30 @@ mod tests {
             .into_iter()
             .filter(|w| {
                 let examples = content.sentences_for_word(w.word_id, 4);
-                examples.first().is_some_and(|(_, es, _)| too_long(es)) && examples.iter().any(|(_, es, _)| !too_long(es))
+                examples.first().is_some_and(|s| too_long(&s.es)) && examples.iter().any(|s| !too_long(&s.es))
             })
             .take(5)
             .collect();
         assert!(!awkward.is_empty(), "no word in the dictionary has a long first example and a short later one");
 
         with_ctx_speaking(voice, |ctx| {
+            // one session: a sentence that is an example of two of the words
+            // is dictated for the first of them only
+            let mut dictated = HashSet::new();
             for w in &awkward {
-                let short: Vec<String> = ctx
-                    .content
-                    .sentences_for_word(w.word_id, 4)
-                    .into_iter()
-                    .map(|(_, es, _)| es)
-                    .filter(|es| !too_long(es))
-                    .collect();
+                let examples = ctx.content.sentences_for_word(w.word_id, 4);
+                let short: Vec<&Example> = examples.iter().filter(|s| !too_long(&s.es) && !dictated.contains(&s.id)).collect();
                 // each short example once, in order, and then no more
                 for expected in &short {
                     let Some((Round::ListenType { word_id, sentence_es, answer, .. }, "listen_type")) = dictation_round(ctx, 0, w) else {
                         panic!("no dictation for a word with a short example")
                     };
-                    assert_eq!((word_id, &sentence_es, &answer), (w.word_id, expected, expected));
+                    assert_eq!((word_id, &sentence_es, &answer), (w.word_id, &expected.es, &expected.es));
+                    dictated.insert(expected.id);
                 }
                 assert!(dictation_round(ctx, 0, w).is_none(), "an example was dictated twice, or a long one was");
             }
+            assert!(!dictated.is_empty());
         });
         // and never without a voice to say it
         with_ctx(|ctx| assert!(dictation_round(ctx, 0, &awkward[0]).is_none()));

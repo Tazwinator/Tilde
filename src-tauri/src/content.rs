@@ -12,10 +12,18 @@ pub struct ContentDb {
 /// A word that may be taught: it has a meaning to show, and is neither vulgar
 /// nor used only outside Spain. Every query that picks words to introduce, to
 /// place by or to offer as a wrong answer goes through this, so they can't
-/// disagree about which words those are. (The length test keeps stray single
-/// letters out until the content database itself drops them.)
-const TEACHABLE: &str =
-    "(gloss_en IS NOT NULL AND LENGTH(lemma) >= 2 AND register IS NULL AND region IS NULL)";
+/// disagree about which words those are.
+const TEACHABLE: &str = "(gloss_en IS NOT NULL AND register IS NULL AND region IS NULL)";
+
+/// An example sentence for a word.
+pub struct Example {
+    pub id: i64,
+    pub es: String,
+    pub en: Option<String>,
+    /// The word as the sentence has it ("comió" for "comer"), in lowercase:
+    /// the token the pipeline linked the sentence to the word by.
+    pub form: String,
+}
 
 impl ContentDb {
     /// Opens the bundled DB as immutable: installed resources live in read-only
@@ -82,19 +90,98 @@ impl ContentDb {
             .unwrap_or_default()
     }
 
+    /// The words a search in Explorar finds, best first. It is matched without
+    /// accents or "ñ" (`tilde_core::search_key`), so that any keyboard can
+    /// type it, against lemmas, written forms and English glosses:
+    ///
+    /// 0. the word spelled exactly as typed ("ano" before "año"),
+    /// 1. the word spelled so but for its accents,
+    /// 2. the words it is a form of ("fue": "ser" and "ir"), those that have
+    ///    it as typed before those that have it with other accents,
+    /// 3. the words that start with it,
+    /// 4. the words whose gloss has it as whole words ("have": "haber"),
+    /// 5. the words that have it anywhere in their lemma or gloss,
+    ///
+    /// and the commonest first within each. A form is what the player typed
+    /// in full, so it comes before words that merely start the same way:
+    /// "vas" is "ir" before it is "vaso". A negative `limit` is none, as in
+    /// SQL.
     pub fn search(&self, query: &str, limit: i64) -> Vec<WordCard> {
-        let q = format!("%{}%", query.to_lowercase().replace(['%', '_'], ""));
-        let mut stmt = self
-            .conn
-            .prepare(
-                "SELECT id, lemma, pos, rank, gloss_en, gloss_es FROM words
-                 WHERE lemma LIKE ?1 OR LOWER(gloss_en) LIKE ?1
-                 ORDER BY rank LIMIT ?2",
-            )
-            .unwrap();
-        stmt.query_map(rusqlite::params![q, limit], word_from_row)
-            .map(|rows| rows.filter_map(|r| r.ok()).collect())
-            .unwrap_or_default()
+        let most = usize::try_from(limit).unwrap_or(usize::MAX);
+        let raw = query.trim().to_lowercase();
+        let q = tilde_core::search_key(&raw);
+        if q.is_empty() {
+            // nothing typed yet: the commonest words, to browse
+            let mut stmt = self
+                .conn
+                .prepare("SELECT id, lemma, pos, rank, gloss_en, gloss_es FROM words ORDER BY rank LIMIT ?1")
+                .unwrap();
+            return stmt
+                .query_map([limit], word_from_row)
+                .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                .unwrap_or_default();
+        }
+
+        // The words the query is a form of, and whether as typed. Forms that
+        // have accents are found without them through `form_keys`.
+        let mut form_hits: HashMap<i64, bool> = HashMap::new();
+        {
+            let mut stmt = self
+                .conn
+                .prepare(
+                    "SELECT word_id, form = ?1 FROM forms WHERE form IN (?1, ?2)
+                     UNION ALL SELECT word_id, 0 FROM form_keys WHERE key = ?2",
+                )
+                .unwrap();
+            let rows = stmt.query_map([&raw, &q], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, bool>(1)?)));
+            for (word_id, as_typed) in rows.into_iter().flatten().filter_map(|r| r.ok()) {
+                *form_hits.entry(word_id).or_default() |= as_typed;
+            }
+        }
+
+        // Everything that could match; which tier each belongs to is decided
+        // here rather than in SQL, where "as whole words" is hard to say. One
+        // letter is in nearly every word or its meaning, so a row is only
+        // looked at here, and read in full once it is among the best.
+        const COLUMNS: &str = "id, lemma, rank, gloss_en, lemma_key";
+        let wanted = key_words(&q);
+        // (tier, a form of it only with other accents, rank, id)
+        let order = |r: &rusqlite::Row| -> rusqlite::Result<(u8, bool, i64, i64)> {
+            let id: i64 = r.get(0)?;
+            let (lemma, lemma_key) = (r.get_ref(1)?.as_str()?, r.get_ref(4)?.as_str()?);
+            let as_form = form_hits.get(&id);
+            let tier = if lemma == raw {
+                0
+            } else if lemma_key == q {
+                1
+            } else if as_form.is_some() {
+                2
+            } else if lemma_key.starts_with(&q) {
+                3
+            } else if has_words(r.get_ref(3)?.as_str_or_null()?.unwrap_or(""), &wanted) {
+                4
+            } else {
+                5
+            };
+            Ok((tier, tier == 2 && as_form == Some(&false), r.get(2)?, id))
+        };
+        let mut ranked: Vec<(u8, bool, i64, i64)> = {
+            let mut stmt = self
+                .conn
+                .prepare(&format!(
+                    "SELECT {COLUMNS} FROM words WHERE instr(lemma_key, ?1) > 0 OR instr(LOWER(gloss_en), ?1) > 0"
+                ))
+                .unwrap();
+            stmt.query_map([&q], order).map(|rows| rows.filter_map(|r| r.ok()).collect()).unwrap_or_default()
+        };
+        // a form need not look like its word at all ("fue", "ir")
+        let unseen: Vec<i64> = form_hits.keys().filter(|id| !ranked.iter().any(|found| found.3 == **id)).copied().collect();
+        {
+            let mut stmt = self.conn.prepare(&format!("SELECT {COLUMNS} FROM words WHERE id = ?1")).unwrap();
+            ranked.extend(unseen.into_iter().filter_map(|word_id| stmt.query_row([word_id], order).ok()));
+        }
+        ranked.sort_unstable();
+        ranked.into_iter().take(most).filter_map(|(.., id)| self.word(id)).collect()
     }
 
     /// The `limit` most frequent teachable words not in `skip` (every word
@@ -205,38 +292,22 @@ impl ContentDb {
         .unwrap_or_default()
     }
 
-    pub fn sentences_for_word(&self, word_id: i64, limit: i64) -> Vec<(i64, String, Option<String>)> {
+    /// Example sentences for a word, those whose translation shows the
+    /// meaning on the word's card first. Within each kind they come as the
+    /// pipeline numbered them: the more of a sentence's words the dictionary
+    /// has the earlier, and the shorter first among those.
+    pub fn sentences_for_word(&self, word_id: i64, limit: i64) -> Vec<Example> {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT s.id, s.es, s.en FROM sentences s
+                "SELECT s.id, s.es, s.en, l.form FROM sentences s
                  JOIN sentence_links l ON l.sentence_id = s.id
                  WHERE l.word_id = ?1 AND LENGTH(s.es) BETWEEN 15 AND 140
-                 ORDER BY s.id LIMIT ?2",
+                 ORDER BY l.quality, l.sentence_id LIMIT ?2",
             )
             .unwrap();
         stmt.query_map(rusqlite::params![word_id, limit], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-        })
-        .map(|rows| rows.filter_map(|r| r.ok()).collect())
-        .unwrap_or_default()
-    }
-
-    /// Sentences containing words near a rank band (for build/cloze rounds).
-    pub fn sentences_near(&self, max_rank: i64, limit: i64) -> Vec<(i64, i64, String, Option<String>)> {
-        let mut stmt = self
-            .conn
-            .prepare(
-                "SELECT s.id, l.word_id, s.es, s.en FROM sentences s
-                 JOIN sentence_links l ON l.sentence_id = s.id
-                 JOIN words w ON w.id = l.word_id
-                 WHERE w.rank <= ?1 AND LENGTH(s.es) BETWEEN 20 AND 90
-                   AND s.en IS NOT NULL
-                 ORDER BY s.id LIMIT ?2",
-            )
-            .unwrap();
-        stmt.query_map(rusqlite::params![max_rank, limit], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            Ok(Example { id: r.get(0)?, es: r.get(1)?, en: r.get(2)?, form: r.get(3)? })
         })
         .map(|rows| rows.filter_map(|r| r.ok()).collect())
         .unwrap_or_default()
@@ -427,6 +498,25 @@ pub(crate) fn gloss_parts(gloss: Option<&str>) -> HashSet<String> {
         .collect()
 }
 
+/// The words of `text` as a search compares them: its search key, cut at
+/// everything that is not a letter or a digit.
+fn key_words(text: &str) -> Vec<String> {
+    let key = tilde_core::search_key(text);
+    words_of(&key).map(String::from).collect()
+}
+
+fn words_of(key: &str) -> impl Iterator<Item = &str> {
+    key.split(|c: char| !c.is_alphanumeric()).filter(|word| !word.is_empty())
+}
+
+/// Whether `gloss` has `wanted` as whole words, one after the other: "to
+/// have" is in "to have; to hold", and "ave" is not in "to have".
+fn has_words(gloss: &str, wanted: &[String]) -> bool {
+    let key = tilde_core::search_key(gloss);
+    let words: Vec<&str> = words_of(&key).collect();
+    !wanted.is_empty() && words.windows(wanted.len()).any(|words| words == wanted)
+}
+
 /// Subtitle word lookup: each written form leads to the one word it most
 /// likely belongs to. A card for every word a form could belong to would
 /// teach "crear" to someone whose film said "creo".
@@ -470,6 +560,29 @@ type Fit = (bool, bool, bool, bool, i64, i64);
 /// Keeps under `form` whichever word fits it better.
 fn keep_better(map: &mut HashMap<String, Fit>, form: String, fit: Fit) {
     map.entry(form).and_modify(|best| *best = fit.min(*best)).or_insert(fit);
+}
+
+#[cfg(test)]
+impl ContentDb {
+    /// A dictionary of a test's own making, in memory: the bundled one's
+    /// tables and indexes (so it can't drift from what the pipeline writes)
+    /// with nothing in them but `rows`.
+    pub(crate) fn scratch(rows: &str) -> ContentDb {
+        let bundled = Connection::open_with_flags(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/resources/content.db"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        let schema: Vec<String> = bundled
+            .prepare("SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY rowid")
+            .and_then(|mut stmt| stmt.query_map([], |r| r.get(0))?.collect())
+            .unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(&schema.join(";\n")).unwrap();
+        conn.execute_batch(rows).unwrap();
+        let ids = conn.prepare("SELECT id FROM words").and_then(|mut stmt| stmt.query_map([], |r| r.get(0))?.collect()).unwrap();
+        ContentDb { conn, ids }
+    }
 }
 
 #[cfg(test)]
@@ -654,6 +767,74 @@ mod tests {
             }
         }
         assert!(decided.iter().all(|n| *n > 0), "a preference never decided anything: {decided:?}");
+    }
+
+    #[test]
+    fn sentences_for_word_serves_confirmed_examples_first() {
+        // Sentence 1 has the word, but its translation doesn't show the
+        // meaning on the card (quality 1); sentences 2 and 4 do.
+        let content = ContentDb::scratch(
+            "INSERT INTO words(id, lemma, lemma_key, pos, rank, gloss_en) VALUES
+               (7, 'vino', 'vino', 'noun', 1, 'wine'), (8, 'venir', 'venir', 'verb', 2, 'to come');
+             INSERT INTO sentences(id, es, en) VALUES
+               (1, 'El vino no es para mí.', 'It is not for me.'),
+               (2, '¿Ustedes beben vino?', 'Do you drink wine?'),
+               (3, 'Él vino corriendo.', 'He came running.'),
+               (4, 'Compramos dos Vinos tintos.', 'We bought two red wines.'),
+               (5, 'Vino.', 'Wine.');
+             INSERT INTO sentence_links(sentence_id, word_id, form, quality) VALUES
+               (1, 7, 'vino', 1), (2, 7, 'vino', 0), (3, 8, 'vino', 0), (4, 7, 'vinos', 0), (5, 7, 'vino', 0);",
+        );
+        let served = |word_id: i64, limit: i64| -> Vec<(i64, String)> {
+            content.sentences_for_word(word_id, limit).into_iter().map(|s| (s.id, s.form)).collect()
+        };
+        let these = |rows: &[(i64, &str)]| -> Vec<(i64, String)> { rows.iter().map(|(id, form)| (*id, form.to_string())).collect() };
+        // confirmed ones first, in their own order; each with the token that
+        // is the word in it; and never another word's sentence, or one too
+        // short to show anything
+        assert_eq!(served(7, 6), these(&[(2, "vino"), (4, "vinos"), (1, "vino")]));
+        assert_eq!(served(7, 1), these(&[(2, "vino")]));
+        assert_eq!(served(8, 6), these(&[(3, "vino")]));
+        let first = content.sentences_for_word(7, 1).remove(0);
+        assert_eq!((first.es.as_str(), first.en.as_deref()), ("¿Ustedes beben vino?", Some("Do you drink wine?")));
+    }
+
+    #[test]
+    fn one_letter_words_are_words_and_are_taught() {
+        let content = bundled();
+        let mut stmt = content.conn.prepare("SELECT lemma FROM words WHERE LENGTH(lemma) < 2 ORDER BY lemma").unwrap();
+        let letters: Vec<String> = stmt.query_map([], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect();
+        // The prepositions and conjunctions that are one letter long, and no
+        // letter of the alphabet that subtitles happen to be full of ("x",
+        // "r", "q"): those are kept out by the pipeline, not by a rule here.
+        assert_eq!(letters, ["a", "e", "o", "u", "y"]);
+        let taught: HashSet<String> = content.new_candidates(12_000, &HashSet::new()).into_iter().map(|w| w.lemma).collect();
+        for letter in &letters {
+            assert!(taught.contains(letter), "\"{letter}\" is never introduced");
+        }
+        // and they can be a wrong answer next to a word of their kind
+        let ni = content.word(content.word_ids_by_lemma("ni")[0]).unwrap();
+        let offered: Vec<String> = content.similar_words(&ni, 12_000).into_iter().map(|w| w.lemma).collect();
+        assert!(offered.iter().any(|lemma| lemma == "o") && offered.iter().any(|lemma| lemma == "u"), "{offered:?}");
+    }
+
+    #[test]
+    fn the_word_list_has_everyday_words_and_no_junk() {
+        let content = bundled();
+        let gloss = |lemma: &str| -> Option<String> {
+            let ids = content.word_ids_by_lemma(lemma);
+            ids.first().and_then(|id| content.word(*id)).and_then(|w| w.gloss_en)
+        };
+        // words that a list made from verb tables alone had lost to a verb
+        for lemma in ["fuera", "vaya", "idea", "hotel", "ni", "ti"] {
+            assert!(gloss(lemma).is_some_and(|g| !g.trim().is_empty()), "{lemma} is missing or has no meaning");
+        }
+        // names, English and forms of other words that had made it in
+        for lemma in ["charles", "lindar", "to", "boy", "tenia"] {
+            assert!(content.word_ids_by_lemma(lemma).is_empty(), "{lemma} is in the word list");
+        }
+        let patata = gloss("patata").unwrap_or_default();
+        assert!(patata.starts_with("potato"), "patata: {patata}");
     }
 
     #[test]

@@ -640,10 +640,10 @@ fn word_detail(state: tauri::State<AppState>, word_id: i64) -> Option<WordDetail
         .locked()
         .sentences_for_word(word_id, 6)
         .into_iter()
-        .map(|(id, es, en)| ExSentence {
-            id,
-            es,
-            en,
+        .map(|s| ExSentence {
+            id: s.id,
+            es: s.es,
+            en: s.en,
             mined: false,
         })
         .collect();
