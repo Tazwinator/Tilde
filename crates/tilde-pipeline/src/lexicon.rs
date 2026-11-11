@@ -991,11 +991,15 @@ fn descriptive(g: &str) -> bool {
 }
 
 /// Up to three senses within 48 characters: short enough for an answer button.
+/// A sense that had to be cut in the middle (see `shorten`) is left out when
+/// the word has one that is whole.
 fn join_glosses(glosses: &[String], verb: bool) -> String {
     let mut chosen: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     let mut len = 0;
-    for g in glosses {
+    let cut = |g: &String| g.ends_with(CUT);
+    let whole = glosses.iter().any(|g| !cut(g));
+    for g in glosses.iter().filter(|g| !(whole && cut(g))) {
         // later senses often repeat an earlier one's words ("and; plus, and",
         // and for verbs "to start, begin; to begin"): keep only what's new,
         // and skip a sense with nothing new. Only for verbs is "to wait" the
@@ -1081,16 +1085,31 @@ fn clean_derived(raw: &str) -> Option<String> {
     clean_gloss(after)
 }
 
+/// The mark at the end of a gloss that was cut in the middle of a phrase.
+const CUT: char = '…';
+
+/// `s` in at most `max` characters and a mark. A list is cut after a whole
+/// alternative: "to go out, to leave, …" keeps what fits. A phrase can only
+/// be cut in the middle, and then says so: "stone that separates the firebox
+/// from" read as if it were a meaning, and "of, from or relating to the
+/// Canary Islands" was cut down to "of".
 fn shorten(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();
     }
     let cut: String = s.chars().take(max).collect();
+    // what stands before a comma is an alternative of its own only if it
+    // says something
+    const LINKS: [&str; 8] = ["of", "from", "to", "in", "on", "for", "or", "and"];
+    let says_something = |list: &str| {
+        list.split([',', ' '])
+            .any(|w| !w.is_empty() && !LINKS.contains(&w))
+    };
     match cut.rfind(", ") {
-        Some(i) if i > 0 => cut[..i].to_string(),
+        Some(i) if i > 0 && says_something(&cut[..i]) => cut[..i].to_string(),
         _ => match cut.rfind(' ') {
-            Some(i) if i > 0 => cut[..i].to_string(),
-            _ => cut,
+            Some(i) if i > 0 => format!("{}{CUT}", &cut[..i]),
+            _ => format!("{cut}{CUT}"),
         },
     }
 }
@@ -2079,6 +2098,34 @@ mod tests {
             clean_derived("neuter singular of ése; that").as_deref(),
             Some("that")
         );
+    }
+
+    #[test]
+    fn a_gloss_cut_in_the_middle_says_so() {
+        // a list is cut after a whole alternative, and that is a gloss
+        assert_eq!(
+            shorten("to pamper, to indulge, to spoil", 24),
+            "to pamper, to indulge"
+        );
+        // a phrase can't be: it is marked, not passed off as a meaning
+        let stone =
+            clean_gloss("stone that separates the firebox from the altar in a forge").unwrap();
+        assert_eq!(stone, "stone that separates the firebox from…");
+        // "of" is no alternative of its own
+        let canarian = clean_gloss("of, from or relating to the Canary Islands").unwrap();
+        assert_eq!(canarian, "of, from or relating to the Canary…");
+        // a word that has a whole sense shows only that
+        let glosses = |senses: &[&str]| {
+            join_glosses(
+                &senses.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                false,
+            )
+        };
+        assert_eq!(glosses(&["altar", &stone]), "altar");
+        assert_eq!(glosses(&[&canarian, "canary"]), "canary");
+        // one that has none keeps the cut one, mark and all
+        assert_eq!(glosses(&[&stone]), stone);
+        assert_eq!(glosses(&[&stone, &canarian]), stone);
     }
 
     #[test]

@@ -52,6 +52,7 @@ cogido
 comido
 comparado
 compartido
+comporta
 comprado
 comprobado
 comprometida
@@ -179,12 +180,14 @@ oye
 pagado
 pagaré
 pagué
+pajaritos
 pantalones
 pare
 partes
 pasa
 patas
 pega
+pego
 perras
 perseguido
 pesa
