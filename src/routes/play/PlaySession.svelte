@@ -8,7 +8,9 @@
   import { confetti } from "$lib/confetti";
   import { pillShape } from "$lib/defs";
   import { reportError } from "$lib/errors.svelte";
-  import { createFlow, initialView, mergeBadges, PLAY_REVEAL_MS, type FlowView } from "$lib/sessionFlow";
+  import { accuracyRing, sessionMinutes } from "$lib/format";
+  import { needsPacking, watchOverflow, type Overflow } from "$lib/overflow";
+  import { comboMilestone, createFlow, initialView, mergeBadges, PLAY_REVEAL_MS, type FlowView } from "$lib/sessionFlow";
   import { sfx } from "$lib/sfx";
   import type { RoundFeedback, SessionSummary } from "$lib/contract";
   import Modal from "$lib/components/Modal.svelte";
@@ -69,11 +71,11 @@
     return PRAISE[(Math.random() * PRAISE.length) | 0];
   }
 
-  function onFeedback(fb: RoundFeedback) {
+  function onFeedback(fb: RoundFeedback, comboBefore: number) {
     if (fb.levelUp) {
       sfx.levelUp();
       confetti(window.innerWidth / 2, window.innerHeight * 0.3, 140);
-    } else if (fb.combo > 0 && fb.combo % 5 === 0) {
+    } else if (comboMilestone(comboBefore, fb.combo)) {
       confetti(window.innerWidth / 2, window.innerHeight * 0.35, 90);
     }
   }
@@ -109,6 +111,30 @@
   let showExit = $state(false);
   let roundBox = $state<HTMLDivElement>();
 
+  // How the summary's card fits (see the summary). A summary that doesn't
+  // fit as it is laid out packs itself tight, and only what is then still
+  // too much scrolls inside the card.
+  let summaryCard = $state<HTMLDivElement>();
+  let summaryTight = $state(false);
+  let summaryFit = $state<Overflow>({ scrolls: false, moreBelow: false });
+  $effect(() => {
+    const card = summaryCard;
+    // read here, so that this runs again once the other layout is on the
+    // page, and measures that one
+    const tight = summaryTight;
+    if (!card) return;
+    return watchOverflow(card, (fit) => {
+      if (needsPacking(fit, tight)) summaryTight = true;
+      else summaryFit = fit;
+    });
+  });
+
+  // A measure never unpacks the summary (it would then not fit, pack again,
+  // and so on); a window of another size is a reason to try once more.
+  function onWindowResize() {
+    summaryTight = false;
+  }
+
   function openExit() {
     sfx.click();
     showExit = true;
@@ -133,6 +159,8 @@
     return "#fb7185";
   }
 </script>
+
+<svelte:window onresize={onWindowResize} />
 
 {#if view.phase === "loading"}
   <div class="flex h-[70vh] items-center justify-center">
@@ -193,16 +221,18 @@
   </div>
 {:else if view.phase === "playing" && view.session}
   <div class="relative mx-auto max-w-3xl">
-    <!-- Top bar -->
+    <!-- Top bar. A deep session has some forty rounds, more dots than the
+      row has room for: then it is the dots that give way (closer together,
+      and narrower), never the ✕ or the score beside them. -->
     <div class="mb-8 flex items-center gap-4">
       <button
-        class="pressable flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-xl font-black hover:bg-white/20"
+        class="pressable flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white/10 text-xl font-black hover:bg-white/20"
         aria-label="Salir de la sesión"
         onclick={openExit}
       >
         ✕
       </button>
-      <div class="flex flex-1 items-center gap-1.5" aria-label="Progreso de la sesión">
+      <div class="flex min-w-0 flex-1 items-center {view.session.rounds.length > 24 ? 'gap-1' : 'gap-1.5'}" aria-label="Progreso de la sesión">
         {#each view.session.rounds as _, i (i)}
           <span
             class="h-2 rounded-full transition-all duration-300
@@ -211,14 +241,15 @@
         {/each}
       </div>
       {#if view.combo > 1}
+        <!-- it starts to glow at three in a row -->
         <span
-          class="anim-glow rounded-full bg-orange-500/20 px-3.5 py-1.5 text-lg font-black text-orange-400"
+          class="shrink-0 whitespace-nowrap rounded-full bg-orange-500/20 px-3.5 py-1.5 text-lg font-black text-orange-400"
           class:anim-glow={view.combo >= 3}
         >
           🔥 x{view.combo}
         </span>
       {/if}
-      <span class="rounded-full bg-grape-500/20 px-3.5 py-1.5 text-lg font-black text-grape-400">⚡ {view.xp} XP</span>
+      <span class="shrink-0 whitespace-nowrap rounded-full bg-grape-500/20 px-3.5 py-1.5 text-lg font-black text-grape-400">⚡ {view.xp} XP</span>
     </div>
 
     <!-- Round. The box can take focus (by script only) so that the keys go
@@ -273,46 +304,80 @@
   </div>
 {:else if view.phase === "done" && view.summary}
   {@const summary = view.summary}
-  <!-- Session summary -->
-  <div class="mx-auto flex max-w-2xl flex-col items-center gap-6">
-    <h1 class="anim-pop text-4xl font-extrabold">¡Sesión completada! 🎊</h1>
+  {@const ring = accuracyRing(summary.rounds, summary.accuracy)}
+  {@const time = sessionMinutes(summary.minutes)}
+  <!-- Session summary. Never taller than the window (the 4rem is the
+    layout's padding above and below), so that "Otra" and "Inicio" are always
+    in view. When there is a lot to list, this is what gives way, in order:
+    the ring shrinks; then the summary packs itself tight (`data-tight`: the
+    spacing of a short window, and the ring beside the three figures); and
+    what is still too much scrolls inside the card, whose lower edge fades
+    out for as long as something is below it. -->
+  <div
+    class="mx-auto flex max-h-[calc(100vh-4rem)] max-w-2xl flex-col items-center gap-6 short:gap-3"
+    data-tight={summaryTight ? "" : undefined}
+  >
+    <h1 class="anim-pop shrink-0 text-4xl font-extrabold short:text-3xl">¡Sesión completada! 🎊</h1>
 
-    <div class="card flex w-full flex-col items-center p-8">
-      <svg width="180" height="180" viewBox="0 0 120 120" role="img" aria-label="Precisión {Math.round(summary.accuracy * 100)}%">
-        <circle cx="60" cy="60" r="50" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="12" />
-        <circle
-          class="anim-ring"
-          cx="60"
-          cy="60"
-          r="50"
-          fill="none"
-          stroke={accuracyColor(summary.accuracy)}
-          stroke-width="12"
-          stroke-linecap="round"
-          stroke-dasharray="{(summary.accuracy * 2 * Math.PI * 50).toFixed(1)} 999"
-          transform="rotate(-90 60 60)"
-        />
-        <text x="60" y="66" text-anchor="middle" font-size="28" font-weight="800" fill="#fff">{Math.round(summary.accuracy * 100)}%</text>
-        <text x="60" y="84" text-anchor="middle" font-size="10" fill="rgba(255,255,255,0.5)">precisión</text>
-      </svg>
+    <!-- A box that scrolls must take the keyboard's focus, or only a mouse
+      wheel reaches what is below: the arrow keys scroll what has the focus. -->
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+    <div
+      bind:this={summaryCard}
+      class="card flex min-h-0 w-full flex-col items-center gap-6 overflow-y-auto overflow-x-hidden p-8 short:gap-3 short:p-5"
+      class:more-below={summaryFit.moreBelow}
+      role={summaryFit.scrolls ? "group" : undefined}
+      aria-label={summaryFit.scrolls ? "Resumen de la sesión" : undefined}
+      tabindex={summaryFit.scrolls ? 0 : undefined}
+    >
+      <!-- No box of its own until the summary is packed tight: the ring and
+        the figures are the card's own rows, and the ring is the one row
+        that shrinks (its drawing stays round and centred in a flatter box). -->
+      <div class="contents tight:flex tight:w-full tight:shrink-0 tight:items-center tight:gap-4">
+        <svg
+          class="h-45 min-h-28 w-45 shrink short:h-30 short:w-30 tight:shrink-0"
+          viewBox="0 0 120 120"
+          role="img"
+          aria-label={ring.fill === null ? "Precisión: sin respuestas" : `Precisión ${ring.label}`}
+        >
+          <circle cx="60" cy="60" r="50" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="12" />
+          <!-- no arc at all without an answer: a zero-length one still draws its round cap -->
+          {#if ring.fill !== null}
+            <circle
+              class="anim-ring"
+              cx="60"
+              cy="60"
+              r="50"
+              fill="none"
+              stroke={accuracyColor(summary.accuracy)}
+              stroke-width="12"
+              stroke-linecap="round"
+              stroke-dasharray="{(ring.fill * 2 * Math.PI * 50).toFixed(1)} 999"
+              transform="rotate(-90 60 60)"
+            />
+          {/if}
+          <text x="60" y="66" text-anchor="middle" font-size="28" font-weight="800" fill="#fff">{ring.label}</text>
+          <text x="60" y="84" text-anchor="middle" font-size="10" fill="rgba(255,255,255,0.5)">precisión</text>
+        </svg>
 
-      <div class="mt-6 grid w-full grid-cols-3 gap-3 text-center">
-        <div class="rounded-2xl bg-white/5 p-4">
-          <p class="text-3xl font-black text-grape-400">⚡ {summary.xp}</p>
-          <p class="text-sm text-white/50">XP ganada</p>
-        </div>
-        <div class="rounded-2xl bg-white/5 p-4">
-          <p class="text-3xl font-black text-orange-400">🔥 {summary.bestCombo}</p>
-          <p class="text-sm text-white/50">mejor combo</p>
-        </div>
-        <div class="rounded-2xl bg-white/5 p-4">
-          <p class="text-3xl font-black text-tubo-500">⏱ {summary.minutes < 1 ? "<1" : Math.round(summary.minutes)}</p>
-          <p class="text-sm text-white/50">minutos</p>
+        <div class="grid w-full shrink-0 grid-cols-3 gap-3 text-center tight:w-auto tight:min-w-0 tight:flex-1">
+          <div class="rounded-2xl bg-white/5 p-4 short:p-2.5">
+            <p class="text-3xl font-black text-grape-400">⚡ {summary.xp}</p>
+            <p class="text-sm text-white/50">XP ganada</p>
+          </div>
+          <div class="rounded-2xl bg-white/5 p-4 short:p-2.5">
+            <p class="text-3xl font-black text-orange-400">🔥 {summary.bestCombo}</p>
+            <p class="text-sm text-white/50">mejor combo</p>
+          </div>
+          <div class="rounded-2xl bg-white/5 p-4 short:p-2.5">
+            <p class="text-3xl font-black text-tubo-500">⏱ {time.count}</p>
+            <p class="text-sm text-white/50">{time.unit}</p>
+          </div>
         </div>
       </div>
 
       {#if summary.newWords.length > 0}
-        <div class="mt-6 w-full">
+        <div class="w-full shrink-0">
           <p class="mb-2 text-center text-lg font-bold text-white/70">Palabras nuevas en tu colección ✨</p>
           <div class="flex flex-wrap justify-center gap-2">
             {#each summary.newWords as w (w)}
@@ -323,27 +388,32 @@
       {/if}
 
       {#if summary.levelUp}
-        <div class="anim-pop mt-6 rounded-3xl bg-gradient-to-r from-mango-500 to-amber-500 px-8 py-4 text-center text-night-900 shadow-xl shadow-mango-500/30">
+        <div class="anim-pop shrink-0 rounded-3xl bg-gradient-to-r from-mango-500 to-amber-500 px-8 py-4 text-center text-night-900 shadow-xl shadow-mango-500/30 short:py-2.5">
           <p class="text-2xl font-black">🎉 ¡Nivel {summary.levelUp.level}!</p>
           <p class="text-lg font-bold">{summary.levelUp.name}</p>
         </div>
       {/if}
 
-      <!-- the ones a round gave (already toasted) and the ones the finish gave -->
-      {#each badges as b (b.id)}
-        <div class="anim-pop mt-4 flex items-center gap-3 rounded-2xl border border-mango-500/50 bg-mango-500/10 px-6 py-3">
-          <span class="anim-sparkle text-3xl" aria-hidden="true">🏅</span>
-          <div>
-            <p class="font-extrabold text-mango-500">{b.name}</p>
-            <p class="text-sm text-white/60">{b.description}</p>
-          </div>
-        </div>
-      {/each}
+      <!-- The ones a round gave (already toasted) and the ones the finish
+        gave. A line each: a perfect first session earns three at once. -->
+      {#if badges.length > 0}
+        <ul class="flex w-full shrink-0 flex-col items-center gap-2">
+          {#each badges as b (b.id)}
+            <li class="anim-pop flex max-w-full items-center gap-2.5 rounded-2xl border border-mango-500/50 bg-mango-500/10 px-5 py-2 leading-6 short:py-1.5">
+              <span class="anim-sparkle text-xl leading-6" aria-hidden="true">🏅</span>
+              <p class="min-w-0">
+                <span class="font-extrabold text-mango-500">{b.name}</span>
+                <span class="text-sm text-white/60">· {b.description}</span>
+              </p>
+            </li>
+          {/each}
+        </ul>
+      {/if}
     </div>
 
-    <div class="flex w-full gap-3">
+    <div class="flex w-full shrink-0 gap-3">
       <button
-        class="pressable flex-1 rounded-3xl bg-gradient-to-r from-grape-500 to-fuchsia-500 py-4 text-xl font-extrabold shadow-lg shadow-grape-500/30 hover:brightness-110"
+        class="pressable flex-1 rounded-3xl bg-gradient-to-r from-grape-500 to-fuchsia-500 py-4 text-xl font-extrabold shadow-lg shadow-grape-500/30 hover:brightness-110 short:py-3"
         onclick={() => {
           sfx.click();
           onAgain();
@@ -352,7 +422,7 @@
         🔁 Otra
       </button>
       <button
-        class="pressable flex-1 rounded-3xl bg-white/10 py-4 text-xl font-extrabold hover:bg-white/20"
+        class="pressable flex-1 rounded-3xl bg-white/10 py-4 text-xl font-extrabold hover:bg-white/20 short:py-3"
         onclick={() => {
           sfx.click();
           goto("/");

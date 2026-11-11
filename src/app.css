@@ -15,6 +15,24 @@
   --color-tubo-500: #38bdf8;
 }
 
+/* `short:` is a window not much taller than the smallest the app allows
+   (940x620; it opens at 1160x780). A screen that has to fit without
+   scrolling packs tighter there.
+   `tight:` is a box that says of itself, with `data-tight`, that it has
+   more to show than it has room for, whatever the window (the session
+   summary does, once it has not fitted). It gets the short window's packing
+   too, so `short:` answers to it as well, and whatever more is written for
+   `tight:` alone. */
+@custom-variant short {
+  @media (height < 720px) {
+    @slot;
+  }
+  &:where([data-tight], [data-tight] *) {
+    @slot;
+  }
+}
+@custom-variant tight (&:where([data-tight], [data-tight] *));
+
 html {
   color-scheme: dark;
   /* The width of the side nav. The nav, the page beside it and everything
@@ -175,6 +193,14 @@ body {
 }
 *::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* A box that scrolls inside the page and still has something below what it
+   shows (overflow.ts says when): its lower edge fades out, frame and all, so
+   it can't be taken for the end. The thin scrollbar alone is easy to miss. */
+.more-below {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 4.5rem), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 4.5rem), transparent);
 }
 
 /* ---------- misc ---------- */

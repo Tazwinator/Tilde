@@ -10,21 +10,27 @@
 import type { WordDetail } from "./contract";
 
 export interface WordCardApi {
-  wordDetail(wordId: number): Promise<WordDetail>;
+  /** null for a word the dictionary doesn't have */
+  wordDetail(wordId: number): Promise<WordDetail | null>;
   markWordKnown(wordId: number): Promise<void>;
   resetWord(wordId: number): Promise<void>;
 }
 
 /**
- * Each call resolves to the detail to show, or to null when the player has
- * asked for another card in the meantime (what is on screen then stays).
+ * What a request for a card came to. `current` is false when the player has
+ * asked for another card in the meantime: what is on screen then stays.
+ * Otherwise `detail` goes on screen, and a null there takes the card down:
+ * the dictionary has no such word, and the card of one that is gone must
+ * not stay up as if it could still be marked or reset.
  */
+export type CardAnswer = { current: false } | { current: true; detail: WordDetail | null };
+
 export function createWordCard(api: WordCardApi) {
   let asked = 0;
 
-  async function read(wordId: number, mine: number): Promise<WordDetail | null> {
-    const found = await api.wordDetail(wordId);
-    return mine === asked ? found : null;
+  async function read(wordId: number, mine: number): Promise<CardAnswer> {
+    const detail = await api.wordDetail(wordId);
+    return mine === asked ? { current: true, detail } : { current: false };
   }
 
   return {

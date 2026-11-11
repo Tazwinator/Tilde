@@ -70,10 +70,12 @@
 
   async function open(w: WordHit) {
     sfx.click();
-    const found = await card.open(w.wordId);
-    if (!found) return;
-    detail = found;
+    const answer = await card.open(w.wordId);
+    if (!answer.current) return;
+    detail = answer.detail;
     activeTense = null;
+    // a word the dictionary no longer has: the panel is back to its hint
+    if (!detail) return;
     await tick();
     if (!detailEl) return;
     // In one column the card opens below the list, out of sight. Beside the
@@ -90,19 +92,22 @@
 
   async function markKnown() {
     if (!detail) return;
-    const found = await card.markKnown(detail.word.wordId);
-    // only now that it is saved: a change that failed must not sound like one that worked
-    sfx.correct(0);
-    confettiCenter(60);
-    if (found) detail = found;
+    const answer = await card.markKnown(detail.word.wordId);
+    if (answer.current) detail = answer.detail;
+    // Only now that it is saved: a change that failed must not sound like
+    // one that worked. Nor one that did nothing, the word being gone.
+    if (!answer.current || answer.detail) {
+      sfx.correct(0);
+      confettiCenter(60);
+    }
     await doSearch();
   }
 
   async function resetWord() {
     if (!detail) return;
     sfx.click();
-    const found = await card.reset(detail.word.wordId);
-    if (found) detail = found;
+    const answer = await card.reset(detail.word.wordId);
+    if (answer.current) detail = answer.detail;
     await doSearch();
   }
 

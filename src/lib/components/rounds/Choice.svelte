@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Round } from "$lib/contract";
   import { textSize } from "$lib/defs";
+  import { optionFromKey } from "$lib/keys";
   import { sfx } from "$lib/sfx";
 
   type RoundT = Extract<Round, { type: "choice" }>;
@@ -36,8 +37,8 @@
 
   function onKey(e: KeyboardEvent) {
     if (chosen !== null) return;
-    const n = parseInt(e.key, 10);
-    if (n >= 1 && n <= 4) pick(n - 1);
+    const option = optionFromKey(e.key, round.options.length);
+    if (option !== null) pick(option);
   }
 </script>
 

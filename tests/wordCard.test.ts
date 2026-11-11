@@ -33,6 +33,11 @@ function fakeApi() {
 
 const detailOf = (wordId, known = false) => ({ word: { wordId, known }, card: null });
 
+/** The answer that puts `detail` on screen (null takes the card down). */
+const shown = (detail) => ({ current: true, detail });
+/** The answer of a request the player has since moved on from. */
+const STALE = { current: false };
+
 const CHANGES = [
   ["markKnown", "markWordKnown"],
   ["reset", "resetWord"],
@@ -49,7 +54,7 @@ test("a card is read again only once the change to its word is saved", async () 
     await settle();
     assert.deepEqual(api.asked(), [`${write} 1`, "wordDetail 1"]);
     api.pending("wordDetail", 1).resolve(detailOf(1, true));
-    assert.deepEqual(await changing, detailOf(1, true));
+    assert.deepEqual(await changing, shown(detailOf(1, true)));
   }
 });
 
@@ -66,9 +71,9 @@ test("a word opened while another is being changed keeps its card", async () => 
     // the reads answered in the order they were made: word 2's card, then
     // word 1's as it is after the change
     api.pending("wordDetail", 2).resolve(detailOf(2));
-    assert.deepEqual(await opening, detailOf(2));
+    assert.deepEqual(await opening, shown(detailOf(2)));
     api.pending("wordDetail", 1).resolve(detailOf(1, true));
-    assert.equal(await changing, null, `${action}: word 1's card came back over word 2's`);
+    assert.deepEqual(await changing, STALE, `${action}: word 1's card came back over word 2's`);
   }
 });
 
@@ -81,9 +86,9 @@ test("the same when the changed word's card is the first to arrive", async () =>
     api.pending(write, 1).resolve();
     await settle();
     api.pending("wordDetail", 1).resolve(detailOf(1, true));
-    assert.equal(await changing, null);
+    assert.deepEqual(await changing, STALE);
     api.pending("wordDetail", 2).resolve(detailOf(2));
-    assert.deepEqual(await opening, detailOf(2));
+    assert.deepEqual(await opening, shown(detailOf(2)));
   }
 });
 
@@ -93,9 +98,9 @@ test("of two words opened, the later one is shown even if it answers first", asy
   const first = card.open(1);
   const second = card.open(2);
   api.pending("wordDetail", 2).resolve(detailOf(2));
-  assert.deepEqual(await second, detailOf(2));
+  assert.deepEqual(await second, shown(detailOf(2)));
   api.pending("wordDetail", 1).resolve(detailOf(1));
-  assert.equal(await first, null);
+  assert.deepEqual(await first, STALE);
 });
 
 test("a word marked and then reset shows as the reset left it", async () => {
@@ -109,9 +114,9 @@ test("a word marked and then reset shows as the reset left it", async () => {
   // two reads of the same card are out, one from before the reset; they answer the wrong way round
   const [afterMark, afterReset] = [api.pending("wordDetail", 1), api.pending("wordDetail", 1)];
   afterReset.resolve(detailOf(1, false));
-  assert.deepEqual(await resetting, detailOf(1, false));
+  assert.deepEqual(await resetting, shown(detailOf(1, false)));
   afterMark.resolve(detailOf(1, true));
-  assert.equal(await marking, null, "the card from before the reset replaced the one after it");
+  assert.deepEqual(await marking, STALE, "the card from before the reset replaced the one after it");
 });
 
 test("a change that can't be saved fails out loud, and the card is not read again", async () => {
@@ -123,4 +128,38 @@ test("a change that can't be saved fails out loud, and the card is not read agai
     await assert.rejects(changing, /disk on fire/);
     assert.deepEqual(api.asked(), [`${write} 1`]);
   }
+});
+
+// `word_detail` answers null for a word id the dictionary doesn't have (a
+// word that left the list in an update); marking or resetting such a word
+// resolves and does nothing.
+test("a word the dictionary no longer has takes its card down", async () => {
+  const api = fakeApi();
+  const card = createWordCard(api);
+  const opening = card.open(1);
+  api.pending("wordDetail", 1).resolve(null);
+  // not the answer of a request that was overtaken: that one leaves the screen alone
+  assert.deepEqual(await opening, shown(null));
+  assert.notDeepEqual(await opening, STALE);
+
+  for (const [action, write] of CHANGES) {
+    const api = fakeApi();
+    const card = createWordCard(api);
+    const changing = card[action](1);
+    api.pending(write, 1).resolve();
+    await settle();
+    api.pending("wordDetail", 1).resolve(null);
+    assert.deepEqual(await changing, shown(null), `${action}: the card of a word that is gone stayed up`);
+  }
+});
+
+test("a missing word asked for earlier doesn't take down the card opened since", async () => {
+  const api = fakeApi();
+  const card = createWordCard(api);
+  const gone = card.open(1);
+  const opening = card.open(2);
+  api.pending("wordDetail", 2).resolve(detailOf(2));
+  assert.deepEqual(await opening, shown(detailOf(2)));
+  api.pending("wordDetail", 1).resolve(null);
+  assert.deepEqual(await gone, STALE);
 });

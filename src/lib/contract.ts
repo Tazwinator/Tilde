@@ -66,7 +66,12 @@ export interface RoundResult {
   roundIndex: number;
   correct: boolean;
   durationMs: number;
-  quality?: number | null; // FSRS grade 1..4 for review_card rounds
+  /**
+   * review_card rounds: the FSRS grade, 1..4. new_word rounds: 4 says the
+   * player knows the word already ("Ya me la sé"); any other value, or none,
+   * introduces it.
+   */
+  quality?: number | null;
   missedWordIds?: number[]; // match rounds: pairs the player got wrong at least once
 }
 

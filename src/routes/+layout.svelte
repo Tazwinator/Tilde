@@ -123,7 +123,10 @@
       </div>
     </nav>
 
-    <main class="ml-[var(--nav-w)] flex-1">
+    <!-- min-w-0: as a flex item the page would otherwise grow to fit its
+      widest row (a long session's progress dots) instead of letting that
+      row shrink, and the window would scroll sideways -->
+    <main class="ml-[var(--nav-w)] min-w-0 flex-1">
       {#key page.url.pathname}
         <!-- No out-transition: it kept the old page in the document, stacked
           on the new one, for as long as it ran. -->

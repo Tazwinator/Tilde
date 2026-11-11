@@ -5,6 +5,8 @@
   import { confettiCenter } from "$lib/confetti";
   import { reportError } from "$lib/errors.svelte";
   import { plural } from "$lib/format";
+  import { choiceFromKey } from "$lib/keys";
+  import { answerFor, DONT_KNOW, DONT_KNOW_CHOICE, DONT_KNOW_KEY, startFromScratch } from "$lib/placement";
   import { sfx } from "$lib/sfx";
   import type { PlacementAnswer, PlacementItem, PlacementResult } from "$lib/contract";
 
@@ -13,26 +15,22 @@
 
   let items = $state<PlacementItem[]>([]);
   let idx = $state(0);
+  // the option picked, or DONT_KNOW; null while the question is open
   let chosen = $state<number | null>(null);
   // never shown, only sent: plain data
   let answers: PlacementAnswer[] = [];
   let result = $state<PlacementResult | null>(null);
   let phase = $state<"intro" | "quiz" | "done">("intro");
+  // one of the intro's two buttons has been pressed and its call is out
+  let starting = $state(false);
 
   $effect(() => {
-    // If placement was already done, send the user home.
+    // If placement was already done, send the user home. Not one that
+    // "Empiezo de cero" is saving this moment: that one shows its result.
     void api.placementStatus().then((r) => {
-      if (r !== null && phase === "intro" && items.length === 0) goto("/");
+      if (r !== null && phase === "intro" && items.length === 0 && !starting) goto("/");
     });
   });
-
-  async function begin() {
-    sfx.click();
-    items = await api.placementStart();
-    idx = 0;
-    answers = [];
-    phase = "quiz";
-  }
 
   let revealTimer: ReturnType<typeof setTimeout> | undefined;
   let left = false;
@@ -42,14 +40,45 @@
     clearTimeout(revealTimer);
   });
 
-  function pick(optionIdx: number) {
+  async function begin() {
+    if (starting) return;
+    starting = true;
+    sfx.click();
+    try {
+      items = await api.placementStart();
+      idx = 0;
+      answers = [];
+      phase = "quiz";
+    } finally {
+      starting = false;
+    }
+  }
+
+  // "Empiezo de cero" (see startFromScratch). No confetti: nothing has been
+  // won yet.
+  async function skip() {
+    if (starting) return;
+    starting = true;
+    sfx.click();
+    try {
+      const res = await startFromScratch(api);
+      if (left) return;
+      result = res;
+      phase = "done";
+    } finally {
+      starting = false;
+    }
+  }
+
+  function pick(choice: number) {
     if (chosen !== null) return;
-    chosen = optionIdx;
-    const item = items[idx];
-    const correct = optionIdx === item.answerIndex;
-    if (correct) sfx.correct(0);
+    chosen = choice;
+    const answer = answerFor(items[idx], choice);
+    // saying so is not a mistake, and doesn't sound like one
+    if (choice === DONT_KNOW) sfx.click();
+    else if (answer.correct) sfx.correct(0);
     else sfx.wrong();
-    const given = [...answers, { wordId: item.wordId, correct }];
+    const given = [...answers, answer];
     const reveal = new Promise<void>((resolve) => {
       revealTimer = setTimeout(resolve, REVEAL_MS);
     });
@@ -84,10 +113,9 @@
   }
 
   function onKey(e: KeyboardEvent) {
-    if (phase === "quiz" && chosen === null) {
-      const n = parseInt(e.key, 10);
-      if (n >= 1 && n <= 4) pick(n - 1);
-    }
+    if (phase !== "quiz" || chosen !== null || !items[idx]) return;
+    const choice = choiceFromKey(e, items[idx].options.length, DONT_KNOW_CHOICE);
+    if (choice !== null) pick(choice);
   }
 </script>
 
@@ -99,13 +127,22 @@
       <div class="anim-float mb-4 text-7xl" aria-hidden="true">🎯</div>
       <h1 class="text-4xl font-extrabold">Vamos a ver qué ya sabes</h1>
       <p class="mx-auto mt-3 max-w-md text-lg text-white/70">
-        Unas preguntitas rápidas. Si no sabes una, ¡no pasa nada! Solo es para calibrar tu punto de partida.
+        Unas preguntitas rápidas para calibrar tu punto de partida. Si no sabes una, pulsa «No lo sé»: es mejor que adivinar.
       </p>
       <button
         class="pressable mt-8 rounded-3xl bg-gradient-to-r from-grape-500 to-fuchsia-500 px-10 py-4 text-2xl font-extrabold shadow-xl shadow-grape-500/40 hover:brightness-110"
+        disabled={starting}
         onclick={begin}
       >
         ¡Vamos! 🎲
+      </button>
+      <p class="mt-6 text-base text-white/50">¿Nunca has estudiado español?</p>
+      <button
+        class="pressable mt-2 rounded-2xl bg-white/10 px-6 py-2.5 text-lg font-bold hover:bg-white/20"
+        disabled={starting}
+        onclick={skip}
+      >
+        Empiezo de cero
       </button>
     </div>
   {:else if phase === "quiz" && items[idx]}
@@ -141,6 +178,19 @@
             </button>
           {/each}
         </div>
+        <!-- not one of the options: it sits apart from them, with a key of its own -->
+        <button
+          class="pressable mt-4 rounded-2xl px-6 py-2.5 text-lg font-bold transition-all
+            {chosen === null
+            ? 'bg-white/5 text-white/60 hover:bg-white/10 hover:text-white'
+            : chosen === DONT_KNOW
+              ? 'bg-white/15 text-white'
+              : 'opacity-40'}"
+          disabled={chosen !== null}
+          onclick={() => pick(DONT_KNOW)}
+        >
+          <span class="mr-2 text-sm font-black text-white/40" aria-hidden="true">{DONT_KNOW_KEY}</span>No lo sé
+        </button>
       </div>
     {/key}
   {:else if phase === "done" && result}

@@ -1,7 +1,7 @@
 // @ts-nocheck -- no @types/node in this project; Node strips the types when running it
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { activates } from "../src/lib/keys.ts";
+import { activates, choiceFromKey, optionFromKey } from "../src/lib/keys.ts";
 
 // a key press as the window listener sees it, with no DOM behind it
 const press = (over = {}) => ({
@@ -45,4 +45,39 @@ test("Shift doesn't matter, and neither does a press with no target", () => {
   assert.equal(activates(press({ target: null })), true);
   // XHTML-style lowercase tag names are still the same controls
   assert.equal(activates(press({ target: { tagName: "button" } })), false);
+});
+
+test("a digit picks an option only if the round has that many", () => {
+  assert.equal(optionFromKey("1", 4), 0);
+  assert.equal(optionFromKey("4", 4), 3);
+  assert.equal(optionFromKey("3", 3), 2);
+  // a round short of options: the key for the missing one does nothing
+  assert.equal(optionFromKey("4", 3), null);
+  assert.equal(optionFromKey("2", 1), null);
+  assert.equal(optionFromKey("1", 0), null);
+  assert.equal(optionFromKey("0", 4), null);
+  assert.equal(optionFromKey("5", 4), null);
+  // no round shows more than four, however many it is said to have
+  assert.equal(optionFromKey("5", 9), null);
+  assert.equal(optionFromKey("a", 4), null);
+  assert.equal(optionFromKey("12", 4), null);
+  assert.equal(optionFromKey("F1", 4), null);
+  assert.equal(optionFromKey(" ", 4), null);
+  assert.equal(optionFromKey("", 4), null);
+});
+
+test("a question's extra choice has a key of its own, beside the options' digits", () => {
+  const other = { key: "x", choice: 99 };
+  const key = (key, over = {}) => ({ key, repeat: false, ctrlKey: false, altKey: false, metaKey: false, ...over });
+  assert.equal(choiceFromKey(key("x"), 4, other), 99);
+  assert.equal(choiceFromKey(key("x"), 0, other), 99);
+  // the options are picked as optionFromKey has it
+  assert.equal(choiceFromKey(key("1"), 4, other), 0);
+  assert.equal(choiceFromKey(key("4"), 3, other), null);
+  assert.equal(choiceFromKey(key("y"), 4, other), null);
+  // a key still held down, or a shortcut, chooses nothing at all
+  assert.equal(choiceFromKey(key("x", { repeat: true }), 4, other), null);
+  assert.equal(choiceFromKey(key("3", { repeat: true }), 4, other), null);
+  assert.equal(choiceFromKey(key("x", { ctrlKey: true }), 4, other), null);
+  assert.equal(choiceFromKey(key("3", { metaKey: true }), 4, other), null);
 });

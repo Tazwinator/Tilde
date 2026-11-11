@@ -20,3 +20,24 @@ test("the focus ring sits in the base layer and leaves each element's shape alon
   assert.match(body, /outline:/);
   assert.ok(!body.includes("border-radius"), "the ring must not reshape what it surrounds");
 });
+
+// Another source check. The session summary packs itself tighter by putting
+// `data-tight` on its box when it doesn't fit: that only does anything while
+// `short:` answers to the attribute as well as to a short window.
+test("`short:` packs a short window, and a box that asks for it with data-tight", () => {
+  const start = css.indexOf("@custom-variant short {");
+  assert.notEqual(start, -1, "the short variant, in its block form");
+  const variant = css.slice(start, css.indexOf("\n}", start));
+  assert.match(variant, /@media \(height < 720px\) \{\s*@slot;/, "a window under 720 px high");
+  assert.match(variant, /&:where\(\[data-tight\], \[data-tight\] \*\) \{\s*@slot;/, "the box marked data-tight and all inside it");
+});
+
+test("a box with more below fades out at its lower edge, in WebKit too", () => {
+  const start = css.indexOf(".more-below {");
+  assert.notEqual(start, -1, "the .more-below rule");
+  const rule = css.slice(start, css.indexOf("}", start));
+  const mask = /(?:^|\s)mask-image: (linear-gradient\(to bottom, #000 [^;]+, transparent\));/.exec(rule);
+  assert.ok(mask, "a mask that is solid at the top and clear at the bottom");
+  // older WebKitGTK only knows the prefixed property: both, with the same value
+  assert.ok(rule.includes(`-webkit-mask-image: ${mask[1]};`), "the same mask under -webkit-");
+});

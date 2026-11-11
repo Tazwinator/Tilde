@@ -3,7 +3,7 @@
 // and an api whose calls the test answers by hand.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createFlow, initialView, mergeBadges, resolveKind, PLAY_REVEAL_MS } from "../src/lib/sessionFlow.ts";
+import { comboMilestone, createFlow, initialView, KNOWN_ALREADY, mergeBadges, resolveKind, PLAY_REVEAL_MS } from "../src/lib/sessionFlow.ts";
 
 function fakeClock() {
   let now = 0;
@@ -68,9 +68,21 @@ const summaryOf = (over = {}) => ({
 
 const choice = (id) => ({ type: "choice", id, wordId: id, prompt: "casa", promptLang: "es", options: ["a", "b"], answerIndex: 0, audioBase64: null });
 
+const intro = (id) => ({
+  type: "new_word",
+  id,
+  word: { wordId: id, lemma: "casa", pos: "noun", rank: 1, glossEn: "house", glossEs: null, level: "A1" },
+  exampleEs: null,
+  exampleEn: null,
+  audioBase64: null,
+});
+
 const sessionOf = (n, sessionId = 7) => ({ sessionId, kind: "quick", rounds: Array.from({ length: n }, (_, i) => choice(100 + i)) });
 
-/** A flow over fakes. Every api call is logged and stays open until the test settles it. */
+/**
+ * A flow over fakes. Every api call is logged and stays open until the test
+ * settles it. `reveal` is every round's reveal time, or a function of the round.
+ */
 function setup({ requested = "quick", fixedKind, reveal = 700, withSettings = true } = {}) {
   const clock = fakeClock();
   const log = [];
@@ -88,7 +100,7 @@ function setup({ requested = "quick", fixedKind, reveal = 700, withSettings = tr
   };
   if (withSettings) api.getSettings = () => call(open.settings, ["getSettings"]);
 
-  const seen = { celebrated: [], errors: [], feedbacks: [], dones: [] };
+  const seen = { celebrated: [], errors: [], feedbacks: [], combosBefore: [], dones: [] };
   const view = initialView();
   const flow = createFlow(
     view,
@@ -98,9 +110,12 @@ function setup({ requested = "quick", fixedKind, reveal = 700, withSettings = tr
       celebrate: (badges) => seen.celebrated.push(badges.map((b) => b.id)),
       reportError: (e) => seen.errors.push(e),
       flashText: (fb, correct, correctText) => (correct ? "¡Bien!" : `era ${correctText}`),
-      onFeedback: (fb) => seen.feedbacks.push(fb),
+      onFeedback: (fb, comboBefore) => {
+        seen.feedbacks.push(fb);
+        seen.combosBefore.push(comboBefore);
+      },
       onDone: (s) => seen.dones.push(s),
-      revealMs: () => reveal,
+      revealMs: typeof reveal === "function" ? reveal : () => reveal,
     },
     { requested, fixedKind },
   );
@@ -192,7 +207,7 @@ test("start() twice starts one session", async () => {
   assert.equal(t.calls("startSession").length, 1);
 });
 
-test("no rounds means the empty state", async () => {
+test("no rounds means the empty state, and the empty session is closed at once", async () => {
   const t = setup({ requested: "review_only" });
   void t.flow.start();
   t.open.settings[0].resolve({ definitionLang: "en", sessionLength: "standard" });
@@ -200,10 +215,37 @@ test("no rounds means the empty state", async () => {
   await settle();
   assert.equal(t.view.phase, "empty");
   assert.equal(t.view.kind, "review_only");
-  // an empty session is still closed when the page goes
+  // not left open in the backend for as long as the empty screen is up
+  assert.deepEqual(t.calls("finishSession"), [["finishSession", 7]]);
+  // its all-zero summary is not a session played: the empty screen stays
+  t.open.finish[0].resolve(summaryOf({ xp: 0, rounds: 0, correct: 0, accuracy: 0, bestCombo: 0, newBadges: [badge("x")] }));
+  await settle();
+  assert.equal(t.view.phase, "empty");
+  assert.equal(t.view.summary, null);
+  assert.deepEqual(t.seen.dones, []);
+  assert.deepEqual(t.seen.celebrated, []);
+  // and leaving, either way, doesn't close it a second time
+  await t.flow.exit();
   t.flow.leave();
   await settle();
-  assert.deepEqual(t.calls("finishSession"), [["finishSession", 7]]);
+  assert.equal(t.calls("finishSession").length, 1);
+});
+
+test("the sidecar's empty session is closed at once too, whatever becomes of the call", async () => {
+  const t = setup({ fixedKind: "sidecar", requested: null, withSettings: false });
+  void t.flow.start();
+  t.open.start[0].resolve({ ...sessionOf(0, 12), kind: "sidecar" });
+  await settle();
+  assert.equal(t.view.phase, "empty");
+  assert.deepEqual(t.calls("finishSession"), [["finishSession", 12]]);
+  // nobody played it: a finish that fails here is not the player's problem
+  t.open.finish[0].reject(new Error("gone"));
+  await settle();
+  assert.equal(t.view.phase, "empty");
+  assert.equal(t.seen.errors.length, 0);
+  t.flow.leave();
+  await settle();
+  assert.equal(t.calls("finishSession").length, 1);
 });
 
 test("a session that can't start shows the error state", async () => {
@@ -521,6 +563,34 @@ test("a slow submit eats into the reveal instead of adding to it", async () => {
   assert.equal(t.view.idx, 2);
 });
 
+test("«Ya me la sé» goes out as quality 4 and moves on as «¡Lo tengo!» does", async () => {
+  // the value round_submit reads as "the player knows this word": the intro
+  // card sends this constant, and the backend does not move with it
+  assert.equal(KNOWN_ALREADY, 4);
+  // what the intro card's two buttons report: (true, null) and (true, null, KNOWN_ALREADY)
+  for (const quality of [undefined, KNOWN_ALREADY]) {
+    const t = setup({ reveal: (round) => PLAY_REVEAL_MS[round.type] });
+    void t.flow.start();
+    t.open.settings[0].resolve({ definitionLang: "en", sessionLength: "standard" });
+    t.open.start[0].resolve({ sessionId: 7, kind: "quick", rounds: [intro(100), choice(101)] });
+    await settle();
+    t.clock.tick(3000);
+    void t.flow.answer(true, null, quality);
+    assert.deepEqual(t.calls("submitRound"), [
+      ["submitRound", 7, 100, { roundIndex: 0, correct: true, durationMs: 3000, quality: quality ?? null, missedWordIds: [] }],
+    ]);
+    // an intro card is no answer: no XP, and the combo as it was
+    t.open.submit[0].resolve(feedback({ xpGained: 0, combo: 0 }));
+    await settle();
+    // nothing to reveal on a card: its quiz is up at once
+    assert.equal(t.view.idx, 1, `quality ${quality}`);
+    assert.equal(t.view.answering, false);
+    assert.equal(t.view.xp, 0);
+    assert.equal(t.view.combo, 0);
+    assert.equal(t.clock.waiting(), 1, "only the pill's timer");
+  }
+});
+
 test("a round with nothing to reveal moves on with its grade", async () => {
   const t = await playing(3, { reveal: 0 });
   await answerNow(t);
@@ -697,6 +767,32 @@ test("round badges are celebrated at once and kept for the summary", async () =>
     ["combo-10", "words-50"],
   );
   assert.equal(t.seen.celebrated.length, 1);
+});
+
+test("confetti is for a combo that has just reached a multiple of five", () => {
+  assert.equal(comboMilestone(4, 5), true);
+  assert.equal(comboMilestone(9, 10), true);
+  // an intro card, or a round sent twice, comes back with the combo unchanged
+  assert.equal(comboMilestone(5, 5), false);
+  assert.equal(comboMilestone(10, 10), false);
+  assert.equal(comboMilestone(5, 6), false);
+  assert.equal(comboMilestone(3, 4), false);
+  // a miss
+  assert.equal(comboMilestone(7, 0), false);
+  assert.equal(comboMilestone(0, 0), false);
+});
+
+test("the page is told what the combo was before each answer", async () => {
+  const t = await playing(4, { reveal: 0 });
+  await answerNow(t, true, feedback({ combo: 5 }));
+  // an intro card in between leaves the combo standing
+  await answerNow(t, true, feedback({ combo: 5, xpGained: 0 }));
+  await answerNow(t, false, feedback({ combo: 0 }));
+  assert.deepEqual(t.seen.combosBefore, [0, 5, 5]);
+  assert.deepEqual(
+    t.seen.feedbacks.map((fb, i) => comboMilestone(t.seen.combosBefore[i], fb.combo)),
+    [true, false, false],
+  );
 });
 
 test("mergeBadges keeps the first of each, in order", () => {

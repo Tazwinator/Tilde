@@ -74,8 +74,9 @@ export const api = {
     return invoke<WordHit[]>("word_search", { query, limit });
   },
 
-  async wordDetail(wordId: number): Promise<WordDetail> {
-    return invoke<WordDetail>("word_detail", { wordId });
+  /** null for a word id the dictionary doesn't have. */
+  async wordDetail(wordId: number): Promise<WordDetail | null> {
+    return invoke<WordDetail | null>("word_detail", { wordId });
   },
 
   async markWordKnown(wordId: number): Promise<void> {

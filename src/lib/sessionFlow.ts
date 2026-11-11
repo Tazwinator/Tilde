@@ -61,8 +61,25 @@ export const PLAY_REVEAL_MS: Record<Round["type"], number> = {
 
 export const SIDECAR_REVEAL_MS = 650;
 
+/**
+ * The `quality` an intro card sends for "Ya me la sé": round_submit then
+ * saves the word as known instead of starting to teach it (see
+ * RoundResult.quality). "¡Lo tengo!" sends none.
+ */
+export const KNOWN_ALREADY = 4;
+
 // a miss stays longer: its pill carries the right answer
 const FLASH_MS = { correct: 900, miss: 1400 };
+
+/**
+ * True when an answer has just taken the combo to a multiple of five, which
+ * is when the page throws confetti. An intro card is not an answer, and it
+ * comes back with the combo as it was (so does a round sent twice): a combo
+ * that merely still stands at five has had its confetti.
+ */
+export function comboMilestone(before: number, after: number): boolean {
+  return after > before && after % 5 === 0;
+}
 
 export interface Flash {
   correct: boolean;
@@ -124,7 +141,8 @@ export interface FlowDeps {
   reportError(e: unknown): void;
   /** The pill's text. Left out by a page that shows no pill. */
   flashText?(fb: RoundFeedback, correct: boolean, correctText: string | null): string;
-  onFeedback?(fb: RoundFeedback): void;
+  /** `comboBefore` is the combo as it stood before this answer (see comboMilestone). */
+  onFeedback?(fb: RoundFeedback, comboBefore: number): void;
   onDone?(summary: SessionSummary): void;
   revealMs(round: Round): number;
 }
@@ -138,7 +156,11 @@ export interface FlowOptions {
 
 export interface Flow {
   start(): Promise<void>;
-  /** A round reports its answer the moment it is given; `hold` keeps the round up until continue(). */
+  /**
+   * A round reports its answer the moment it is given. `quality` is a review
+   * card's grade, and on an intro card KNOWN_ALREADY for "Ya me la sé";
+   * `hold` keeps the round up until continue().
+   */
   answer(correct: boolean, correctText?: string | null, quality?: number, missedWordIds?: number[], hold?: boolean): Promise<void>;
   continue(): void;
   /** While paused (the exit dialog is open) neither the next round nor the summary appears. */
@@ -245,6 +267,12 @@ export function createFlow(view: FlowView, deps: FlowDeps, opts: FlowOptions): F
     view.session = s;
     if (s.rounds.length === 0) {
       view.phase = "empty";
+      // Nothing to play, so it is closed now and not when the page goes: an
+      // empty session must not sit open in the backend for as long as this
+      // screen is up. `finished` first, so that leaving doesn't send it again.
+      finished = true;
+      const id = s.sessionId;
+      void attempt(() => api.finishSession(id)).catch(() => {});
       return;
     }
     roundStart = clock.now();
@@ -290,11 +318,12 @@ export function createFlow(view: FlowView, deps: FlowDeps, opts: FlowOptions): F
     if (feedback) celebrate(feedback.newBadges);
     if (left) return;
     if (feedback) {
+      const comboBefore = view.combo;
       view.xp += feedback.xpGained;
       view.combo = feedback.combo;
       view.roundBadges = mergeBadges(view.roundBadges, feedback.newBadges);
       const onFeedback = deps.onFeedback;
-      if (onFeedback) extra(() => onFeedback(feedback));
+      if (onFeedback) extra(() => onFeedback(feedback, comboBefore));
     }
     answered = { fb: feedback, correct, correctText };
 

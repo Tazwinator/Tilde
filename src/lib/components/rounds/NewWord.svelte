@@ -4,6 +4,7 @@
   import { glossText, posLabel } from "$lib/defs";
   import { playRoundAudio } from "$lib/audio";
   import { activates } from "$lib/keys";
+  import { KNOWN_ALREADY } from "$lib/sessionFlow";
   import { sfx } from "$lib/sfx";
 
   type RoundT = Extract<Round, { type: "new_word" }>;
@@ -15,7 +16,7 @@
   }: {
     round: RoundT;
     definitionLang: string;
-    onAnswered: (correct: boolean, correctText?: string | null) => void;
+    onAnswered: (correct: boolean, correctText?: string | null, quality?: number) => void;
   } = $props();
 
   const gloss = $derived(glossText(round.word, definitionLang));
@@ -25,11 +26,11 @@
 
   let answered = false;
 
-  function answer() {
+  function answer(quality?: number) {
     if (answered) return;
     answered = true;
     sfx.pop();
-    onAnswered(true, null);
+    onAnswered(true, null, quality);
   }
 
   function onKey(e: KeyboardEvent) {
@@ -41,9 +42,11 @@
 
 <svelte:window onkeydown={onKey} />
 
-<div class="card anim-pop mx-auto max-w-xl p-8 text-center">
+<!-- the `short:` spacing makes up for the second button's height: in the
+  smallest window the card still ends above the bottom edge -->
+<div class="card anim-pop mx-auto max-w-xl p-8 text-center short:p-6">
   <p class="text-lg font-bold uppercase tracking-widest text-tubo-500">✨ Palabra nueva</p>
-  <h1 class="anim-pop my-5 text-6xl font-black tracking-tight">{round.word.lemma}</h1>
+  <h1 class="anim-pop my-5 text-6xl font-black tracking-tight short:my-3">{round.word.lemma}</h1>
   {#if round.word.pos}
     <p class="mb-2 text-sm font-semibold uppercase text-white/40">{posLabel(round.word.pos)} · {round.word.level}</p>
   {/if}
@@ -68,9 +71,17 @@
   {/if}
 
   <button
-    class="pressable mt-8 w-full rounded-3xl bg-gradient-to-r from-lime-500 to-emerald-500 py-4 text-2xl font-extrabold text-night-900 shadow-xl shadow-lime-500/30 hover:brightness-110"
-    onclick={answer}
+    class="pressable mt-8 w-full rounded-3xl bg-gradient-to-r from-lime-500 to-emerald-500 py-4 text-2xl font-extrabold text-night-900 shadow-xl shadow-lime-500/30 hover:brightness-110 short:mt-5"
+    onclick={() => answer()}
   >
     ¡Lo tengo! 💪 <span class="ml-1 text-base font-bold text-night-900/50" aria-hidden="true">Enter</span>
+  </button>
+  <!-- No key of its own: Enter and Space are the main button's, and a word
+    is not marked as known by a slip of the hand. -->
+  <button
+    class="pressable mt-2.5 rounded-2xl bg-white/5 px-5 py-1.5 text-base font-bold text-white/60 hover:bg-white/15 hover:text-white"
+    onclick={() => answer(KNOWN_ALREADY)}
+  >
+    Ya me la sé
   </button>
 </div>

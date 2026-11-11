@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
   import type { Round } from "$lib/contract";
+  import { dealUnaligned, shuffle } from "$lib/deal";
   import { textSize } from "$lib/defs";
   import { sfx } from "$lib/sfx";
 
@@ -19,17 +20,9 @@
     text: string;
   }
 
-  function shuffle<T>(a: T[]): T[] {
-    const arr = [...a];
-    for (let i = arr.length - 1; i > 0; i--) {
-      const j = (Math.random() * (i + 1)) | 0;
-      [arr[i], arr[j]] = [arr[j], arr[i]];
-    }
-    return arr;
-  }
-
   const left: Tile[] = $derived(shuffle(round.pairs.map((p) => ({ wordId: p.wordId, text: p.es }))));
-  const right: Tile[] = $derived(shuffle(round.pairs.map((p) => ({ wordId: p.wordId, text: p.en }))));
+  // never row for row with the left column: that deal is solved by reading across
+  const right: Tile[] = $derived(dealUnaligned(left, shuffle(round.pairs.map((p) => ({ wordId: p.wordId, text: p.en })))));
 
   let selectedEs = $state<number | null>(null);
   let matched = $state<number[]>([]);
@@ -108,6 +101,8 @@
     </div>
   </div>
   {#if selectedEs !== null}
-    <p class="mt-4 text-center text-lg text-white/60">Ahora toca su traducción →</p>
+    <!-- "significado", not "traducción": in "Español primero" the right
+      column holds Spanish definitions -->
+    <p class="mt-4 text-center text-lg text-white/60">Ahora toca su significado →</p>
   {/if}
 </div>

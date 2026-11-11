@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Round } from "$lib/contract";
+  import { optionFromKey } from "$lib/keys";
   import { sfx } from "$lib/sfx";
 
   type RoundT = Extract<Round, { type: "cloze" }>;
@@ -26,8 +27,8 @@
 
   function onKey(e: KeyboardEvent) {
     if (chosen !== null) return;
-    const n = parseInt(e.key, 10);
-    if (n >= 1 && n <= 4) pick(n - 1);
+    const option = optionFromKey(e.key, round.options.length);
+    if (option !== null) pick(option);
   }
 </script>
 
@@ -37,9 +38,9 @@
   <h1 class="mb-6 text-center text-3xl font-extrabold">Completa la frase 📝</h1>
   <div class="card mb-6 p-6 text-center">
     <p class="text-2xl font-bold leading-relaxed">{round.sentenceEs}</p>
-    {#if chosen !== null}
-      <p class="mt-3 text-lg text-white/55">{round.sentenceEn}</p>
-    {/if}
+    <!-- There from the start, as in Build: without it "No ___ sorprende"
+      takes me, te or le alike, and the translation is what settles it. -->
+    <p class="mt-3 text-lg text-white/55">💡 {round.sentenceEn}</p>
   </div>
   <div class="grid grid-cols-2 gap-4">
     {#each round.options as opt, i (i)}

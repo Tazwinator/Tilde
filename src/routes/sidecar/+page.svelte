@@ -7,7 +7,7 @@
   import { sfx } from "$lib/sfx";
   import { grade, type Verdict } from "$lib/grading";
   import { textSize } from "$lib/defs";
-  import { typingInto } from "$lib/keys";
+  import { optionFromKey, typingInto } from "$lib/keys";
   import { reportError } from "$lib/errors.svelte";
   import { createFlow, initialView, mergeBadges, SIDECAR_REVEAL_MS, type FlowView } from "$lib/sessionFlow";
   import type { Round } from "$lib/contract";
@@ -145,8 +145,8 @@
       else answerTyped();
       return;
     }
-    const n = parseInt(e.key, 10);
-    if (n >= 1 && n <= 4 && options.length > 0) answer(n - 1);
+    const option = optionFromKey(e.key, options.length);
+    if (option !== null) answer(option);
   }
 </script>
 
@@ -159,13 +159,17 @@
     <div class="m-auto max-w-lg text-center">
       <p class="text-2xl font-bold">
         {#if view.phase === "empty"}
-          No hay palabras para repasar todavía. Juega una sesión normal primero.
+          Aún no tienes palabras para repasar aquí.
         {:else if view.session}
           No se ha podido cerrar la sesión. Tus respuestas ya estaban guardadas.
         {:else}
           No se ha podido preparar la sesión.
         {/if}
       </p>
+      <!-- this mode only quizzes words the player has met: it introduces none -->
+      {#if view.phase === "empty"}
+        <p class="mt-2 text-xl text-white/70">Juega una sesión normal y vuelve.</p>
+      {/if}
       <p class="mt-2 text-lg text-white/50">Esc para salir</p>
       <button class="mt-4 rounded-full bg-grape-500 px-6 py-2 text-lg font-bold" onclick={() => goto("/")}>
         volver

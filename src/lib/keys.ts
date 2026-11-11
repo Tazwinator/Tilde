@@ -12,6 +12,34 @@ export function typingInto(e: KeyboardEvent): boolean {
   );
 }
 
+/**
+ * The option a digit key picks (0-based), or null if there is no such option.
+ * A round can come with fewer than four options, and then "4" picks nothing
+ * rather than an answer that isn't on screen. Four is the most any round shows.
+ */
+export function optionFromKey(key: string, count: number): number | null {
+  if (!/^[1-9]$/.test(key)) return null;
+  const n = Number(key);
+  return n <= count && n <= 4 ? n - 1 : null;
+}
+
+/**
+ * What a key press chooses on a question that has, apart from its numbered
+ * options, one more choice on a key of its own (`other`: the placement quiz's
+ * "No lo sé"): the option's index, `other.choice`, or null for nothing. A key
+ * still held down from the question before chooses nothing (held, it would
+ * answer every question left), and neither does a shortcut: Ctrl+0 is not 0.
+ */
+export function choiceFromKey(
+  e: Pick<KeyboardEvent, "key" | "repeat" | "ctrlKey" | "altKey" | "metaKey">,
+  count: number,
+  other: { readonly key: string; readonly choice: number },
+): number | null {
+  if (e.repeat || e.ctrlKey || e.altKey || e.metaKey) return null;
+  if (e.key === other.key) return other.choice;
+  return optionFromKey(e.key, count);
+}
+
 type Press = Pick<KeyboardEvent, "key" | "code" | "repeat" | "ctrlKey" | "altKey" | "metaKey" | "target">;
 
 /**

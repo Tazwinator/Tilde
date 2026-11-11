@@ -18,15 +18,6 @@
     word: string;
   }
 
-  function shuffle<T>(a: T[]): T[] {
-    const arr = [...a];
-    for (let i = arr.length - 1; i > 0; i--) {
-      const j = (Math.random() * (i + 1)) | 0;
-      [arr[i], arr[j]] = [arr[j], arr[i]];
-    }
-    return arr;
-  }
-
   // svelte-ignore state_referenced_locally -- `round` is fixed for this component's lifetime (keyed by round index)
   const pool: Tile[] = $state(round.tiles.map((word, id) => ({ id, word })));
   let row = $state<number[]>([]);
@@ -76,12 +67,14 @@
   <p class="mb-6 text-center text-lg text-white/55">💡 {round.sentenceEn}</p>
 
   <div
-    class="mb-5 flex min-h-20 flex-wrap content-start items-start gap-2.5 rounded-3xl border-2 border-dashed p-4 transition-colors
+    class="mb-5 flex flex-wrap content-start items-start gap-2.5 rounded-3xl border-2 border-dashed p-4 transition-colors
       {checked === null ? 'border-white/15 bg-white/[0.03]' : checked ? 'border-lime-500/70 bg-lime-500/10' : 'anim-shake border-coral-500/70 bg-coral-500/10'}"
     aria-label="Tu frase"
   >
     {#if row.length === 0}
-      <span class="text-lg text-white/30">Toca las palabras de abajo…</span>
+      <!-- as tall as a tile (its padding and line), so the tray below stays
+        where it is when the first word lands here -->
+      <span class="py-2.5 text-xl text-white/30">Toca las palabras de abajo…</span>
     {/if}
     {#each row as tileId (tileId)}
       <button
