@@ -226,6 +226,8 @@ fn sound_key(word: &str) -> String {
 /// classes when the word's own runs out), no two that read the same, and
 /// none that is right as well:
 /// - no wrong answer shares a meaning with the word (`distractor_candidates`);
+/// - no two wrong answers share a meaning either: "a, an" next to "a, an;
+///   one" tells the player that neither is the answer;
 /// - meanings are all in one language, and where a Spanish definition is
 ///   shown, no word is offered that it defines too;
 /// - for a word that is only heard, nothing that sounds like it, or like
@@ -248,6 +250,9 @@ fn options_from(w: &WordCard, candidates: Vec<WordCard>, shown: Shown, definitio
     let answer = text(w);
     let mut options = vec![answer.clone()];
     let mut read: HashSet<String> = HashSet::from([reads(&answer)]);
+    // the meanings on the buttons so far, piece by piece
+    let pieces = |option: &str| if meanings { gloss_parts(Some(option)) } else { HashSet::new() };
+    let mut said = pieces(&answer);
     let mut sounds: HashSet<String> = HashSet::from([sound_key(&w.lemma)]);
     for d in candidates {
         if options.len() == 4 {
@@ -262,9 +267,11 @@ fn options_from(w: &WordCard, candidates: Vec<WordCard>, shown: Shown, definitio
             }
         }
         let option = text(&d);
-        if read.contains(&reads(&option)) || (heard && sounds.contains(&sound_key(&d.lemma))) {
+        let says = pieces(&option);
+        if read.contains(&reads(&option)) || (heard && sounds.contains(&sound_key(&d.lemma))) || !says.is_disjoint(&said) {
             continue;
         }
+        said.extend(says);
         read.insert(reads(&option));
         sounds.insert(sound_key(&d.lemma));
         options.push(option);
@@ -970,8 +977,10 @@ const PLACEMENT_MAX_CUT: i64 = 1800;
 /// right answers says little; where they fall says more. Right answers count
 /// up to the second miss: one slip is forgiven, but past two misses a right
 /// answer is as likely a guess. Of those, the hardest may be a guess too, so
-/// the cut is the second-hardest; and a single right answer is no evidence
-/// of anything, so then nothing is marked (a cut of 1).
+/// the cut is just past the second-hardest: that word was answered right,
+/// and is known with the ones before it (it would otherwise be the first
+/// word taught as new). A single right answer is no evidence of anything, so
+/// then nothing is marked (a cut of 1).
 fn placement_cut(ranked: &[(i64, bool)]) -> i64 {
     let mut kept = Vec::new();
     let mut misses = 0;
@@ -988,7 +997,7 @@ fn placement_cut(ranked: &[(i64, bool)]) -> i64 {
     if kept.len() < 2 {
         return 1;
     }
-    kept[kept.len() - 2].min(PLACEMENT_MAX_CUT)
+    (kept[kept.len() - 2] + 1).min(PLACEMENT_MAX_CUT)
 }
 
 /// Works out the placement and saves it: every teachable word more frequent
@@ -1686,6 +1695,31 @@ mod tests {
         assert_eq!(options_from(&vaca, vec![], Shown::Heard, "en"), (vec!["vaca".to_string()], 0));
     }
 
+    #[test]
+    fn no_two_wrong_answers_say_the_same() {
+        let la = made_up(1, "la", "the; her, it", None);
+        let candidates = vec![
+            made_up(2, "una", "a, an; one", None),
+            // each says what an option before it says: "a", "one", "her"
+            made_up(3, "un", "a, an", None),
+            made_up(4, "uno", "one", None),
+            made_up(5, "le", "to him, to her", None),
+            made_up(6, "unos", "some; a few", None),
+            made_up(7, "mi", "my", None),
+        ];
+        let offered = |shown: Shown| {
+            let (options, answer) = options_from(&la, candidates.clone(), shown, "en");
+            let right = options[answer as usize].clone();
+            let mut wrong: Vec<String> = options.into_iter().filter(|o| *o != right).collect();
+            wrong.sort();
+            (right, wrong)
+        };
+        let these = |right: &str, wrong: [&str; 3]| (right.to_string(), wrong.map(String::from).to_vec());
+        assert_eq!(offered(Shown::Meaning), these("the; her, it", ["a, an; one", "my", "some; a few"]));
+        // words on the buttons are different words, whatever they mean
+        assert_eq!(offered(Shown::Word), these("la", ["un", "una", "uno"]));
+    }
+
     /// Two common words whose English glosses have nothing in common, but
     /// whose Spanish definitions share a part.
     fn defined_alike(content: &ContentDb) -> (WordCard, WordCard) {
@@ -1962,16 +1996,17 @@ mod tests {
         assert_eq!(cut(&[0]), 1);
         assert_eq!(cut(&[5]), 1);
         assert_eq!(cut(&[2, 9]), 1, "a right answer after two misses is not counted");
-        // the cut is the second-hardest answer kept
-        assert_eq!(cut(&[0, 1]), 40);
-        assert_eq!(cut(&[0, 1, 2]), 120);
-        assert_eq!(cut(&[0, 1, 2, 3, 4]), 800);
+        // the cut is just past the second-hardest answer kept: that word is
+        // known too
+        assert_eq!(cut(&[0, 1]), 41);
+        assert_eq!(cut(&[0, 1, 2]), 121);
+        assert_eq!(cut(&[0, 1, 2, 3, 4]), 801);
         // one slip is forgiven, wherever it falls
-        assert_eq!(cut(&[1, 2, 3]), 350);
-        assert_eq!(cut(&[0, 1, 2, 4]), 350);
-        assert_eq!(cut(&[0, 1, 2, 4, 6, 7, 8, 9]), 350, "answers past the second miss changed the cut");
+        assert_eq!(cut(&[1, 2, 3]), 351);
+        assert_eq!(cut(&[0, 1, 2, 4]), 351);
+        assert_eq!(cut(&[0, 1, 2, 4, 6, 7, 8, 9]), 351, "answers past the second miss changed the cut");
         // and however well it goes, the hard questions vouch for no more than this
-        assert_eq!(cut(&[0, 1, 2, 3, 4, 5]), 1600);
+        assert_eq!(cut(&[0, 1, 2, 3, 4, 5]), 1601);
         assert_eq!(cut(&[0, 1, 2, 3, 4, 5, 6]), PLACEMENT_MAX_CUT);
         assert_eq!(cut(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), PLACEMENT_MAX_CUT);
     }

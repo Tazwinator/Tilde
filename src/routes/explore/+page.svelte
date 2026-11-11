@@ -51,13 +51,17 @@
     debounce = setTimeout(() => void doSearch(), 250);
   }
 
+  // The list shows this many words at most, the best matches first; when it
+  // is full it says so, since it has no end to scroll to.
+  const MOST = 50;
+
   // Answers can come back out of order; only the latest search fills the list.
   let searches = 0;
   async function doSearch() {
     const mine = ++searches;
     searching = true;
     try {
-      const found = await api.searchWords(query.trim(), 50);
+      const found = await api.searchWords(query.trim(), MOST);
       if (mine === searches) results = found;
     } finally {
       if (mine === searches) searching = false;
@@ -161,6 +165,11 @@
           </span>
         </button>
       {/each}
+      {#if results.length >= MOST}
+        <p class="px-2 py-1 text-sm text-white/45">
+          {query.trim() ? `Las ${MOST} mejores coincidencias. Escribe más letras para afinar.` : `Las ${MOST} palabras más comunes. Escribe para buscar entre todas.`}
+        </p>
+      {/if}
     </div>
 
     <!-- Detail panel -->

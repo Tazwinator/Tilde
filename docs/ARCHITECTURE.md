@@ -304,8 +304,9 @@ to both.
 - **One option builder.** Every round that offers words or meanings to
   pick from, the placement questions included, gets its options from
   `options_for`: four options, no two that read the same, and none that is
-  right as well. No wrong answer shares a meaning with the word; where the
-  word is only heard, none sounds like it or like another option.
+  right as well. No wrong answer shares a meaning with the word, or with
+  another wrong answer ("a, an" next to "a, an; one" would rule both out);
+  where the word is only heard, none sounds like it or like another option.
 - **One language per round.** With "Español primero" a round shows Spanish
   definitions if its word has one, and is otherwise in English throughout
   (`meaning_lang`). It never mixes the two.
@@ -341,7 +342,7 @@ to both.
 - **Placement** asks one word from each of ten frequency bands, in English
   (`placement_items`), and runs once: `placement_submit` asked again
   returns the stored result.
-  - Right answers count up to the second miss, and the cut is the rank of
+  - Right answers count up to the second miss, and the cut is just past
     the second-hardest of them, at most 1800 (`placement_cut`). With four
     options a guess is right one time in four, so where the right answers
     fall says more than how many there are.
@@ -529,6 +530,10 @@ The CSP in `tauri.conf.json` allows no remote content. Audio is played from
      Latin-American, vulgar, archaic or slang are passed over when there is
      a plainer one. A sense that names Spain is Peninsular, whatever other
      regions it names.
+   - A sense that is a list is cut after a whole alternative. One that is a
+     long description can only be cut in the middle: it then ends in "…"
+     and is left out when the word has a whole sense. A word left with only
+     such a gloss wants a row in `curation/glosses.tsv`.
    - A sense that only repeats the word (*hotel*: "hotel") is its gloss
      when it leads the entry: a cognate is its own translation. A noun or
      adjective with no sense of its own takes the meaning of the word it

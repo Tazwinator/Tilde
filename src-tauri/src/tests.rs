@@ -1435,9 +1435,9 @@ fn placement_credit_stops_at_the_second_miss() {
         let (result, ranks) = place(app, |nth| nth != 3 && nth != 5);
         assert_eq!(ranks.len(), 10, "{ranks:?}");
         // right answers count up to the 6th question (1, 2, 3 and 5), and the
-        // cut is the second-hardest of those
-        assert_eq!(result.frontier_rank, ranks[2]);
-        let below = teachable(app).iter().filter(|w| w.rank < ranks[2]).count() as i64;
+        // cut is just past the second-hardest of those: it is known as well
+        assert_eq!(result.frontier_rank, ranks[2] + 1);
+        let below = teachable(app).iter().filter(|w| w.rank <= ranks[2]).count() as i64;
         assert!(below > 0);
         assert_eq!(result.words_marked_known, below);
         assert_eq!(count(app, "cards"), below);
@@ -1460,8 +1460,8 @@ fn placement_answers_are_taken_by_word_not_by_position() {
         let answers = vec![right(3), PlacementAnswer { word_id: orphan, correct: true }, wrong(1), right(0), right(2), wrong(0)];
         let result = placement_submit(app.state(), answers).unwrap();
         // by rank: right, wrong, right, right. All three right answers
-        // count, and the cut is the second-hardest of them.
-        assert_eq!(result.frontier_rank, rank_of(by_rank[2]));
+        // count, and the cut is just past the second-hardest of them.
+        assert_eq!(result.frontier_rank, rank_of(by_rank[2]) + 1);
     });
 }
 
