@@ -14,7 +14,7 @@ impl ContentDb {
     /// (as built by older pipelines) needs even for reads.
     pub fn open(path: &std::path::Path) -> Result<ContentDb, String> {
         let conn = Connection::open_with_flags(
-            immutable_uri(path),
+            sqlite_file_uri(&path.to_string_lossy(), cfg!(windows)),
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
         )
         .map_err(|e| format!("{}: {e}", path.display()))?;
@@ -288,14 +288,34 @@ impl ContentDb {
     }
 }
 
-fn immutable_uri(path: &std::path::Path) -> String {
-    let mut p = path.to_string_lossy().into_owned();
-    if cfg!(windows) {
+/// The SQLite URI that opens `path` as an immutable file. `windows` says
+/// which platform's paths to expect: a parameter, not a `cfg`, so the Windows
+/// half is tested wherever the tests run.
+fn sqlite_file_uri(path: &str, windows: bool) -> String {
+    let mut p = path.to_string();
+    if windows {
+        // A verbatim path (`\\?\C:\...`, as Windows gives for an install
+        // dir) can't go in as it is: its "?" lands where a URI has its
+        // authority, and SQLite refuses to open it. SQLite puts the prefix
+        // back itself for a path long enough to need it.
+        if let Some(rest) = p.strip_prefix(r"\\?\UNC\") {
+            p = format!(r"\\{rest}");
+        } else if let Some(rest) = p.strip_prefix(r"\\?\") {
+            p = rest.to_string();
+        }
         p = p.replace('\\', "/");
+        // a drive path is written "/C:/..." in an SQLite URI
+        let mut start = p.chars();
+        if start.next().is_some_and(|c| c.is_ascii_alphabetic()) && start.next() == Some(':') {
+            p.insert(0, '/');
+        }
     }
     // only these three are special in the path part of an SQLite URI
     let p = p.replace('%', "%25").replace('?', "%3f").replace('#', "%23");
-    format!("file:{p}?immutable=1")
+    // A path starting "//" (a network share) needs the empty authority
+    // spelled out, or its server name would be read as one.
+    let scheme = if p.starts_with("//") { "file://" } else { "file:" };
+    format!("{scheme}{p}?immutable=1")
 }
 
 fn word_from_row(r: &rusqlite::Row) -> rusqlite::Result<WordCard> {
@@ -353,16 +373,52 @@ fn add_candidate(map: &mut HashMap<String, (bool, Vec<i64>)>, form: String, word
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn content_uris_for_windows_paths_are_valid_sqlite_uris() {
+        let program_files = "file:/C:/Program Files/Tilde/resources/content.db?immutable=1";
+        let share = "file:////srv/share/T/content.db?immutable=1";
+        let windows = [
+            (r"C:\Program Files\Tilde\resources\content.db", program_files),
+            (r"\\?\C:\Program Files\Tilde\resources\content.db", program_files),
+            (r"\\?\UNC\srv\share\T\content.db", share),
+            (r"\\srv\share\T\content.db", share),
+            (r"resources\content.db", "file:resources/content.db?immutable=1"),
+            (r"C:\a%b#c?d\x.db", "file:/C:/a%25b%23c%3fd/x.db?immutable=1"),
+        ];
+        for (path, uri) in windows {
+            assert_eq!(sqlite_file_uri(path, true), uri, "{path}");
+            // SQLite must take the URI for that file: open it if it is there
+            // (the relative one is, when the tests run in src-tauri), and
+            // otherwise object to nothing but its absence. A URI it can't
+            // parse fails differently ("invalid uri authority").
+            let there = [path.to_string(), path.replace('\\', "/")].iter().any(|p| std::path::Path::new(p).exists());
+            let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI;
+            match Connection::open_with_flags(uri, flags) {
+                Ok(_) => assert!(there, "{uri} opened, but there is no {path}"),
+                Err(e) => {
+                    assert!(!there, "{uri} did not open {path}: {e}");
+                    assert_eq!(e.sqlite_error_code(), Some(rusqlite::ErrorCode::CannotOpen), "{uri}: {e}");
+                    assert!(!e.to_string().contains("authority"), "{uri}: {e}");
+                }
+            }
+        }
+        // off Windows a path is left as it is, backslashes and all
+        assert_eq!(sqlite_file_uri("/home/a b/x.db", false), "file:/home/a b/x.db?immutable=1");
+        assert_eq!(sqlite_file_uri(r"/home/a\b/x?.db", false), r"file:/home/a\b/x%3f.db?immutable=1");
+        assert_eq!(sqlite_file_uri("resources/content.db", false), "file:resources/content.db?immutable=1");
+    }
 
     /// A WAL-mode DB in a read-only directory (as when installed) must still be
     /// readable. Only a non-root run exercises the permission part; the odd
     /// directory name also covers URI escaping either way.
+    #[cfg(unix)]
     #[test]
     fn opens_wal_db_in_read_only_dir() {
+        use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("tilde ro ?#%41 ñ {}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("content.db");
