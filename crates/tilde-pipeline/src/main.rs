@@ -224,6 +224,7 @@ fn main() {
                 gloss: &w.gloss,
                 forms: &w.forms,
                 voseo: &w.voseo,
+                untaught: w.register.is_some() || w.region.is_some(),
             }),
         english,
     );

@@ -316,6 +316,9 @@ pub struct LinkWord<'a> {
     pub forms: &'a [(String, String)],
     /// Those of `forms` that are only *vos* forms (see `Lemma::voseo`).
     pub voseo: &'a [String],
+    /// Never taught: flagged vulgar, or as used only outside Spain (see
+    /// `Lemma::register` and `Lemma::region`).
+    pub untaught: bool,
 }
 
 struct Known {
@@ -335,6 +338,8 @@ pub struct Linker {
     vos_exact: HashSet<String>,
     vos_loose: HashSet<String>,
     words: HashMap<i64, Known>,
+    /// The words that are never taught.
+    untaught: HashSet<i64>,
     english: English,
 }
 
@@ -343,10 +348,14 @@ impl Linker {
         let mut exact: HashMap<String, Vec<i64>> = HashMap::new();
         let mut loose: HashMap<String, Vec<i64>> = HashMap::new();
         let mut known: HashMap<i64, Known> = HashMap::new();
+        let mut untaught: HashSet<i64> = HashSet::new();
         // keys with a vos reading, and keys with any other reading
         let mut vos: [HashSet<String>; 2] = Default::default();
         let mut plain: [HashSet<String>; 2] = Default::default();
         for w in words {
+            if w.untaught {
+                untaught.insert(w.id);
+            }
             let headword = w.lemma.to_lowercase();
             known.insert(
                 w.id,
@@ -383,6 +392,7 @@ impl Linker {
             vos_exact: &vos_exact - &plain_exact,
             vos_loose: &vos_loose - &plain_loose,
             words: known,
+            untaught,
             english,
         }
     }
@@ -409,6 +419,16 @@ impl Linker {
 
     pub fn lookup(&self, token: &str) -> &[i64] {
         self.candidates(token).0
+    }
+
+    /// Whether one of `tokens` can only be a word that is never taught: a
+    /// vulgar one, or one that Spain doesn't use. Such a sentence is a poor
+    /// example of the other words in it.
+    pub fn unsuitable(&self, tokens: &[String]) -> bool {
+        tokens.iter().any(|t| {
+            let readings = self.lookup(t);
+            !readings.is_empty() && readings.iter().all(|id| self.untaught.contains(id))
+        })
     }
 
     /// The first of `tokens` whose only reading is a *vos* form ("tenés",
@@ -524,11 +544,15 @@ pub fn not_found<'a>(blocked: &'a HashSet<String>, pairs: &[Pair]) -> Vec<&'a st
 
 /// Short, readable sentences, spread so each word gets a handful of examples.
 /// Sentences in `blocked` (see `blocklist`) are never picked, nor are those
-/// written with *vos* forms.
+/// written with *vos* forms. A sentence with a word that is never taught (a
+/// vulgar one, or one used only outside Spain) comes after all the others:
+/// it is picked only for words still short of examples, and the app, which
+/// shows a word's examples in this order, shows it last.
 pub fn pick(pairs: &[Pair], linker: &Linker, blocked: &HashSet<String>) -> Vec<Picked> {
     struct Candidate<'a> {
         pair: &'a Pair,
         links: Vec<Link>,
+        unsuitable: bool,
         coverage: f32,
         len: usize,
     }
@@ -570,12 +594,18 @@ pub fn pick(pairs: &[Pair], linker: &Linker, blocked: &HashSet<String>) -> Vec<P
             candidates.push(Candidate {
                 pair,
                 links,
+                unsuitable: linker.unsuitable(&toks),
                 coverage,
                 len: toks.len(),
             });
         }
     }
-    candidates.sort_by(|a, b| b.coverage.total_cmp(&a.coverage).then(a.len.cmp(&b.len)));
+    candidates.sort_by(|a, b| {
+        a.unsuitable
+            .cmp(&b.unsuitable)
+            .then(b.coverage.total_cmp(&a.coverage))
+            .then(a.len.cmp(&b.len))
+    });
 
     let mut per_word: HashMap<i64, u32> = HashMap::new();
     let mut out = Vec::new();
@@ -612,6 +642,7 @@ mod tests {
         gloss: &'static str,
         forms: Vec<(String, String)>,
         voseo: Vec<String>,
+        untaught: bool,
     }
 
     /// A word with its own row and the given (form, tag) rows.
@@ -624,6 +655,7 @@ mod tests {
             gloss,
             forms: all,
             voseo: Vec::new(),
+            untaught: false,
         }
     }
 
@@ -655,6 +687,7 @@ mod tests {
                 gloss: w.gloss,
                 forms: &w.forms,
                 voseo: &w.voseo,
+                untaught: w.untaught,
             }),
             english(),
         )
@@ -1314,5 +1347,55 @@ mod tests {
         assert_eq!(pick(&pairs, &linker, &HashSet::new()).len(), 2);
         assert!(not_found(&blocked, &pairs).is_empty());
         assert_eq!(not_found(&blocked, &pairs[2..]), ["depende el contexto."]);
+    }
+
+    #[test]
+    fn a_sentence_with_a_word_that_is_never_taught_comes_last() {
+        let mut culo = word(30, "culo", "arse", &[]);
+        culo.untaught = true;
+        // "pavo" is a turkey, and a flagged word too: a reading that isn't
+        // flagged is enough for a token to be an ordinary one
+        let mut pavo = word(31, "pavo", "idiot", &[]);
+        pavo.untaught = true;
+        // Spain says "ordenador"
+        let mut computadora = word(32, "computadora", "computer", &[]);
+        computadora.untaught = true;
+        let linker = linker(&[
+            word(
+                1,
+                "besar",
+                "to kiss",
+                &[("bésame", ""), ("besa", "presente|él/ella/usted")],
+            ),
+            word(2, "mi", "my", &[]),
+            word(3, "mano", "hand", &[]),
+            word(4, "el", "the", &[("la", "feminine")]),
+            word(5, "pavo", "turkey", &[]),
+            culo,
+            pavo,
+            computadora,
+        ]);
+        let pairs = [
+            pair("Bésame el culo.", "Kiss my arse."),
+            pair("Besa la computadora.", "He kisses the computer."),
+            pair("Besa el pavo.", "He kisses the turkey."),
+            pair("Bésame la mano.", "Kiss my hand."),
+        ];
+        let picked = pick(&pairs, &linker, &HashSet::new());
+        let picked: Vec<&str> = picked.iter().map(|p| p.es.as_str()).collect();
+        // the first two would otherwise lead: they are as short as the
+        // others, all their words are known, and they come first in the file
+        assert_eq!(
+            picked,
+            [
+                "Besa el pavo.",
+                "Bésame la mano.",
+                "Bésame el culo.",
+                "Besa la computadora."
+            ]
+        );
+        // each is still an example, of the flagged word too
+        assert!(linker.unsuitable(&tokens("Bésame el culo.")));
+        assert!(!linker.unsuitable(&tokens("Besa el pavo.")));
     }
 }

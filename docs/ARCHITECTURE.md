@@ -563,6 +563,9 @@ The CSP in `tauri.conf.json` allows no remote content. Audio is played from
      endings, the others are listed in `curation/english_forms.tsv`.
    - Each link stores its token (`form`) and whether its word is shown
      (`quality`).
+   - A pair with a word that is never taught (vulgar, or used only outside
+     Spain) is numbered after all the others. It is picked only for words
+     still short of examples, and the app shows it last.
 
 **Word ids.** The app keys progress by `words.id`, so an id has to mean the
 same word in every build. `curation/word_ids.tsv` records the id of every
