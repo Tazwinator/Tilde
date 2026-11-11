@@ -15,6 +15,26 @@ pub fn cefr_for_rank(rank: i64) -> &'static str {
     }
 }
 
+/// The key a word is searched by: lowercase, with accents, diaeresis and ñ
+/// folded, so a query typed on any keyboard finds it. Answer checking keeps
+/// ñ apart (grading.ts); this is only for lookup. The content database
+/// stores these keys (`words.lemma_key`, `form_keys`), so a change here
+/// needs a pipeline rebuild.
+pub fn search_key(s: &str) -> String {
+    s.to_lowercase()
+        .chars()
+        .map(|c| match c {
+            'á' | 'à' => 'a',
+            'é' | 'è' => 'e',
+            'í' | 'ì' => 'i',
+            'ó' | 'ò' => 'o',
+            'ú' | 'ù' | 'ü' => 'u',
+            'ñ' => 'n',
+            other => other,
+        })
+        .collect()
+}
+
 /// XP levels: every 500 XP, with fun Spanish-flavoured names.
 pub const LEVEL_NAMES: [&str; 10] = [
     "Turista",
@@ -67,4 +87,24 @@ pub fn all_badges() -> Vec<types::Badge> {
             earned_at: None,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_key_folds_accents_and_enye() {
+        assert_eq!(search_key("ÁRBOL"), "arbol");
+        assert_eq!(search_key("Niño"), "nino");
+        assert_eq!(search_key("pingüino"), "pinguino");
+        assert_eq!(search_key("canté"), "cante");
+        assert_eq!(search_key("está"), "esta");
+        assert_eq!(search_key("áéíóúüñ ÁÉÍÓÚÜÑ"), "aeiouun aeiouun");
+        // a grave accent typed by mistake still finds the word
+        assert_eq!(search_key("àèìòù"), "aeiou");
+        assert_eq!(search_key("tengo"), "tengo");
+        // only search folds ñ: subtitle matching and grading keep it a letter
+        assert_eq!(srt::strip_accents("niño"), "niño");
+    }
 }

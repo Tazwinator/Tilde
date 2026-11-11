@@ -4,6 +4,7 @@ use crate::lexicon::Lemma;
 use crate::sentences::Picked;
 use rusqlite::{params, Connection};
 use std::path::Path;
+use tilde_core::search_key;
 
 pub const SCHEMA_VERSION: &str = "3";
 
@@ -13,6 +14,7 @@ CREATE TABLE words(
   id INTEGER PRIMARY KEY,
   lang TEXT NOT NULL DEFAULT 'es',
   lemma TEXT NOT NULL,
+  lemma_key TEXT NOT NULL,  -- tilde_core::search_key(lemma): what a search is matched against
   pos TEXT,
   rank INTEGER NOT NULL,
   gloss_en TEXT,
@@ -22,12 +24,17 @@ CREATE TABLE words(
 );
 CREATE UNIQUE INDEX idx_words_rank ON words(rank);
 CREATE UNIQUE INDEX idx_words_lemma ON words(lemma COLLATE NOCASE);
+CREATE INDEX idx_words_key ON words(lemma_key);
 CREATE TABLE forms(
   form TEXT NOT NULL,
   word_id INTEGER NOT NULL REFERENCES words(id),
   tag TEXT NOT NULL DEFAULT '',  -- '', 'plural', 'feminine plural', 'participio', 'tense|person'
   PRIMARY KEY(form, word_id, tag));
 CREATE INDEX idx_forms_word ON forms(word_id);
+CREATE TABLE form_keys(  -- search keys of forms whose key differs from the form itself
+  key TEXT NOT NULL,
+  word_id INTEGER NOT NULL REFERENCES words(id),
+  PRIMARY KEY(key, word_id)) WITHOUT ROWID;
 CREATE TABLE conjugations(
   word_id INTEGER NOT NULL REFERENCES words(id),
   tense TEXT NOT NULL,
@@ -102,21 +109,38 @@ fn build(
         let tx = conn.transaction()?;
         {
             let mut word = tx.prepare(
-                "INSERT INTO words(id, lemma, pos, rank, gloss_en, gloss_es, region, register)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                "INSERT INTO words(
+                   id, lemma, lemma_key, pos, rank, gloss_en, gloss_es, region, register)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             )?;
             let mut form =
                 tx.prepare("INSERT OR IGNORE INTO forms(form, word_id, tag) VALUES (?1, ?2, ?3)")?;
+            let mut form_key =
+                tx.prepare("INSERT OR IGNORE INTO form_keys(key, word_id) VALUES (?1, ?2)")?;
             let mut conj = tx.prepare(
                 "INSERT INTO conjugations(word_id, tense, person, form) VALUES (?1, ?2, ?3, ?4)",
             )?;
             for (i, (w, id)) in words.iter().zip(ids).enumerate() {
                 let rank = i as i64 + 1;
                 word.execute(params![
-                    id, w.lemma, w.pos, rank, w.gloss, w.gloss_es, w.region, w.register
+                    id,
+                    w.lemma,
+                    search_key(&w.lemma),
+                    w.pos,
+                    rank,
+                    w.gloss,
+                    w.gloss_es,
+                    w.region,
+                    w.register
                 ])?;
                 for (f, tag) in &w.forms {
                     form.execute(params![f, id, tag])?;
+                    // a form that is its own key ("tengo") is found in
+                    // `forms`; only the others ("tendrá") need a row
+                    let key = search_key(f);
+                    if key != *f {
+                        form_key.execute(params![key, id])?;
+                    }
                 }
                 for c in &w.conjugations {
                     conj.execute(params![id, c.tense, c.person, c.form])?;
@@ -201,6 +225,55 @@ mod tests {
             rows("SELECT value, 0 FROM meta WHERE key = 'version'"),
             [("3".to_string(), 0)]
         );
+        drop(conn);
+        let _ = std::fs::remove_file(&out);
+    }
+
+    #[test]
+    fn writes_search_keys() {
+        let out = scratch("keys");
+        let mut nino = lemma("niño");
+        nino.forms.push(("niños".to_string(), "plural".to_string()));
+        let mut tener = lemma("tener");
+        for (form, tag) in [
+            ("tengo", "presente|yo"),
+            ("tendrá", "futuro|él"),
+            // one key for two forms of a word is one row
+            ("tendrá", "futuro|usted"),
+        ] {
+            tener.forms.push((form.to_string(), tag.to_string()));
+        }
+        write(&out, &[nino, tener], &[186, 15], &[], &[]).unwrap();
+
+        let conn = Connection::open(&out).unwrap();
+        let rows = |sql: &str| -> Vec<(String, i64)> {
+            let mut stmt = conn.prepare(sql).unwrap();
+            let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+            rows.map(|r| r.unwrap()).collect()
+        };
+        assert_eq!(
+            rows("SELECT lemma_key, id FROM words ORDER BY rank"),
+            [("nino".to_string(), 186), ("tener".to_string(), 15)]
+        );
+        // only forms whose key differs from the form: "tengo" and "tener"
+        // are found in `forms` as they are
+        assert_eq!(
+            rows("SELECT key, word_id FROM form_keys ORDER BY key"),
+            [
+                ("nino".to_string(), 186),
+                ("ninos".to_string(), 186),
+                ("tendra".to_string(), 15)
+            ]
+        );
+        // a search by key has to use the index, not scan 12,000 lemmas
+        let plan: String = conn
+            .query_row(
+                "EXPLAIN QUERY PLAN SELECT id FROM words WHERE lemma_key = 'nino'",
+                [],
+                |r| r.get(3),
+            )
+            .unwrap();
+        assert!(plan.contains("idx_words_key"), "{plan}");
         drop(conn);
         let _ = std::fs::remove_file(&out);
     }
