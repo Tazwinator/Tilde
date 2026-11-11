@@ -65,11 +65,22 @@
     }
   }
 
+  // Adding takes a moment (the sentence is matched against the whole
+  // dictionary again), so its button is busy meanwhile and a second click
+  // sends nothing.
+  let adding = $state<number[]>([]);
+
   async function addToDeck(id: number) {
-    await api.addSentenceToDeck(id);
-    // the sound and the tick come once it is saved, never before
-    sfx.pop();
-    sentences = sentences.map((s) => (s.id === id ? { ...s, inDeck: true } : s));
+    if (adding.includes(id)) return;
+    adding = [...adding, id];
+    try {
+      await api.addSentenceToDeck(id);
+      // the sound and the tick come once it is saved, never before
+      sfx.pop();
+      sentences = sentences.map((s) => (s.id === id ? { ...s, inDeck: true } : s));
+    } finally {
+      adding = adding.filter((other) => other !== id);
+    }
   }
 </script>
 
@@ -168,7 +179,8 @@
             <span class="rounded-full bg-lime-500/20 px-3.5 py-1.5 text-sm font-extrabold text-lime-500">✓ en el mazo</span>
           {:else}
             <button
-              class="pressable rounded-full bg-grape-500 px-3.5 py-1.5 text-sm font-extrabold hover:brightness-110"
+              class="pressable rounded-full bg-grape-500 px-3.5 py-1.5 text-sm font-extrabold hover:brightness-110 disabled:opacity-60"
+              disabled={adding.includes(s.id)}
               onclick={() => addToDeck(s.id)}
             >
               + Añadir al mazo

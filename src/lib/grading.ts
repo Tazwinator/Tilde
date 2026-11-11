@@ -6,7 +6,12 @@
 
 export type Verdict = "right" | "accents" | "wrong";
 
-/** Lowercase, punctuation removed (¿ ¡ « » “ ” … too), spaces collapsed. Keeps accents. */
+/**
+ * Lowercase, punctuation removed (¿ ¡ « » “ ” … too), spaces collapsed. Keeps accents.
+ * `graded_as` in src-tauri/src/session.rs does the same in Rust, so that a
+ * sentence-building round is never dealt in an order this would call right:
+ * change one, change the other.
+ */
 export function norm(s: string): string {
   return s
     .normalize("NFC")
