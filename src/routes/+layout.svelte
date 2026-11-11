@@ -1,10 +1,12 @@
 <script lang="ts">
   import "../app.css";
-  import { fade, fly } from "svelte/transition";
+  import { fly } from "svelte/transition";
   import type { Snippet } from "svelte";
   import { page } from "$app/state";
   import { onMount } from "svelte";
-  import { sfx } from "$lib/sfx";
+  import { api } from "$lib/api";
+  import { forgetLegacySoundFlag, setSfxEnabled, sfx } from "$lib/sfx";
+  import { motion } from "$lib/motion";
   import { failure, reportError } from "$lib/errors.svelte";
   import { dismissToast, toasts } from "$lib/celebrate.svelte";
 
@@ -15,6 +17,13 @@
     const onRejection = (e: PromiseRejectionEvent) => reportError(e.reason);
     window.addEventListener("unhandledrejection", onRejection);
     return () => window.removeEventListener("unhandledrejection", onRejection);
+  });
+
+  // Sound follows the saved setting and nothing else. Every start comes
+  // through here, and so do a reset and a restore, which end in a reload.
+  onMount(() => {
+    forgetLegacySoundFlag();
+    void api.getSettings().then((s) => setSfxEnabled(s.soundEnabled));
   });
 
   interface NavItem {
@@ -28,7 +37,7 @@
     { href: "/play", emoji: "🎮", label: "Jugar" },
     { href: "/explore", emoji: "🔍", label: "Explorar" },
     { href: "/sentences", emoji: "💬", label: "Frases" },
-    { href: "/stats", emoji: "📈", label: "Stats" },
+    { href: "/stats", emoji: "📈", label: "Estadísticas" },
     { href: "/settings", emoji: "⚙️", label: "Ajustes" },
   ];
 
@@ -38,6 +47,29 @@
     if (p.startsWith("/play")) return 1;
     const idx = NAV.findIndex((n) => n.href === p);
     return idx === -1 ? 0 : idx;
+  });
+
+  // The bar beside the active link is one element that slides between them.
+  // Its place is measured from the link itself, not worked out from an
+  // assumed row height.
+  let links: HTMLAnchorElement[] = $state([]);
+  let barY = $state(0);
+  let barSlides = $state(false);
+
+  $effect(() => {
+    const el = links[activeIdx];
+    if (el) barY = el.offsetTop;
+  });
+
+  // The slide is switched on only after the bar has been painted where it
+  // belongs: the app can open on any page, and the bar must just be there,
+  // not arrive from "Inicio". Two frames, because a transition switched on
+  // before that first paint still runs from the bar's starting place.
+  onMount(() => {
+    let frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(() => (barSlides = true));
+    });
+    return () => cancelAnimationFrame(frame);
   });
 </script>
 
@@ -63,15 +95,15 @@
       </a>
 
       <div class="relative flex flex-col gap-2">
+        <div
+          class="absolute left-0 top-0 h-14 w-1.5 rounded-full bg-gradient-to-b from-grape-400 to-tubo-500
+            {barSlides ? 'transition-transform duration-300 ease-out' : ''}"
+          style="transform: translateY({barY}px)"
+          aria-hidden="true"
+        ></div>
         {#each NAV as item, i (item.href)}
-          {#if i === activeIdx}
-            <div
-              class="absolute left-0 h-14 w-1.5 rounded-full bg-gradient-to-b from-grape-400 to-tubo-500 transition-all duration-300 ease-out"
-              style="top: {i * 60}px"
-              aria-hidden="true"
-            ></div>
-          {/if}
           <a
+            bind:this={links[i]}
             href={item.href}
             class="pressable relative flex h-14 items-center gap-3 rounded-2xl px-2.5 text-lg transition-colors md:px-3
               {i === activeIdx
@@ -93,7 +125,9 @@
 
     <main class="ml-[var(--nav-w)] flex-1">
       {#key page.url.pathname}
-        <div class="mx-auto max-w-4xl px-5 py-8 md:px-10" in:fly={{ y: 14, duration: 220 }} out:fade={{ duration: 100 }}>
+        <!-- No out-transition: it kept the old page in the document, stacked
+          on the new one, for as long as it ran. -->
+        <div class="mx-auto max-w-4xl px-5 py-8 md:px-10" in:fly={{ y: 14, duration: motion(220) }}>
           {@render children()}
         </div>
       {/key}

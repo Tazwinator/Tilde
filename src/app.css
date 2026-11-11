@@ -122,11 +122,36 @@ body {
   animation: rise-in 0.3s ease both;
 }
 
+/* The right answer, shown once the round is answered. Its button already
+   carries anim-pop from when it appeared, and adding the same animation
+   again never restarts it: hence one with a name of its own. */
+@keyframes reveal-pop {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.08); }
+  100% { transform: scale(1); }
+}
+.anim-reveal {
+  animation: reveal-pop 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* Fills a progress ring from empty to the element's own stroke-dasharray:
+   only `from` is given, so the end value is whatever the markup says. */
+@keyframes ring-fill {
+  from { stroke-dasharray: 0 999; }
+}
+.anim-ring {
+  animation: ring-fill 1s ease-out both;
+}
+
 /* ---------- focus & scrollbar ---------- */
-:focus-visible {
-  outline: 3px solid rgba(167, 139, 250, 0.85);
-  outline-offset: 2px;
-  border-radius: 0.6rem;
+/* In the base layer, so an element's own utilities win: its rounded shape
+   stays as it is, and an input that draws its own focus border (with
+   outline-none) doesn't get a second ring. Unlayered, this beat them all. */
+@layer base {
+  :focus-visible {
+    outline: 3px solid rgba(167, 139, 250, 0.85);
+    outline-offset: 2px;
+  }
 }
 /* In a dialog focus is moved by script (to its first button, and round the
    Tab trap), and WebKit shows no :focus-visible ring for that after a mouse

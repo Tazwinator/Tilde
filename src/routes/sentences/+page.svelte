@@ -2,17 +2,47 @@
   import { api } from "$lib/api";
   import { decodeText } from "$lib/decode";
   import { confettiCenter } from "$lib/confetti";
+  import { plural } from "$lib/format";
   import { sfx } from "$lib/sfx";
   import type { ImportReport, MinedSentence } from "$lib/contract";
 
+  // The collection comes a page at a time, newest first; `total` is all of it.
   let sentences = $state<MinedSentence[]>([]);
+  let total = $state(0);
+  let loadingMore = $state(false);
   let report = $state<ImportReport | null>(null);
-  let showEn = $state<Record<number, boolean>>({});
   let importing = $state(false);
   let fileInput: HTMLInputElement | undefined = $state();
 
+  // counts the times the list started over (an import does that), so that a
+  // page asked for before then is not added to the new list
+  let restarts = 0;
+
+  async function loadFirst() {
+    const list = ++restarts;
+    const page = await api.listSentences();
+    if (list !== restarts) return;
+    sentences = page.sentences;
+    total = page.total;
+  }
+
+  async function loadMore() {
+    const last = sentences.at(-1);
+    if (!last || loadingMore) return;
+    const list = restarts;
+    loadingMore = true;
+    try {
+      const page = await api.listSentences(last.id);
+      if (list !== restarts) return;
+      sentences = [...sentences, ...page.sentences];
+      total = page.total;
+    } finally {
+      loadingMore = false;
+    }
+  }
+
   $effect(() => {
-    void api.listSentences().then((s) => (sentences = s));
+    void loadFirst();
   });
 
   async function onFile(e: Event) {
@@ -23,9 +53,12 @@
     try {
       const text = decodeText(new Uint8Array(await file.arrayBuffer()));
       report = await api.importSrt(file.name, text);
-      sentences = await api.listSentences();
-      confettiCenter(130);
-      sfx.fanfare();
+      await loadFirst();
+      // a file that added nothing is not a win: no confetti for it
+      if (report.sentencesAdded > 0) {
+        confettiCenter(130);
+        sfx.fanfare();
+      }
     } finally {
       importing = false;
       input.value = "";
@@ -33,13 +66,10 @@
   }
 
   async function addToDeck(id: number) {
-    sfx.pop();
     await api.addSentenceToDeck(id);
+    // the sound and the tick come once it is saved, never before
+    sfx.pop();
     sentences = sentences.map((s) => (s.id === id ? { ...s, inDeck: true } : s));
-  }
-
-  function toggleEn(id: number) {
-    showEn = { ...showEn, [id]: !showEn[id] };
   }
 </script>
 
@@ -74,21 +104,31 @@
 
     {#if report}
       <div class="anim-pop mx-auto mt-6 max-w-lg rounded-3xl bg-white/5 p-5 text-left">
-        <p class="text-xl font-extrabold text-lime-500">¡Importado: {report.fileTitle}!</p>
-        <div class="mt-3 grid grid-cols-3 gap-3 text-center">
-          <div class="rounded-2xl bg-white/5 p-3">
-            <p class="text-2xl font-black">{report.sentencesFound}</p>
-            <p class="text-sm text-white/50">frases vistas</p>
+        {#if report.sentencesAdded > 0}
+          <p class="text-xl font-extrabold text-lime-500">¡Importado: {report.fileTitle}!</p>
+        {:else if report.sentencesFound === 0}
+          <p class="text-xl font-extrabold text-white/70">No hemos encontrado frases en «{report.fileTitle}»</p>
+          <p class="mt-1 text-base text-white/60">¿Es un archivo de subtítulos (.srt, .vtt) o de texto?</p>
+        {:else}
+          <p class="text-xl font-extrabold text-white/70">Nada nuevo en «{report.fileTitle}»</p>
+          <p class="mt-1 text-base text-white/60">Ya tenías estas frases o no reconocimos suficientes palabras.</p>
+        {/if}
+        {#if report.sentencesFound > 0}
+          <div class="mt-3 grid grid-cols-3 gap-3 text-center">
+            <div class="rounded-2xl bg-white/5 p-3">
+              <p class="text-2xl font-black">{report.sentencesFound}</p>
+              <p class="text-sm text-white/50">frases vistas</p>
+            </div>
+            <div class="rounded-2xl bg-white/5 p-3">
+              <p class="text-2xl font-black text-tubo-500">{report.sentencesAdded}</p>
+              <p class="text-sm text-white/50">añadidas</p>
+            </div>
+            <div class="rounded-2xl bg-white/5 p-3">
+              <p class="text-2xl font-black text-lime-500">{report.wordsMatched}</p>
+              <p class="text-sm text-white/50">palabras reconocidas</p>
+            </div>
           </div>
-          <div class="rounded-2xl bg-white/5 p-3">
-            <p class="text-2xl font-black text-tubo-500">{report.sentencesAdded}</p>
-            <p class="text-sm text-white/50">añadidas</p>
-          </div>
-          <div class="rounded-2xl bg-white/5 p-3">
-            <p class="text-2xl font-black text-lime-500">{report.wordsMatched}</p>
-            <p class="text-sm text-white/50">palabras reconocidas</p>
-          </div>
-        </div>
+        {/if}
         {#if report.topWords.length > 0}
           <p class="mt-4 text-base font-bold text-white/60">Las palabras que más aparecen:</p>
           <div class="mt-2 flex flex-wrap gap-2">
@@ -103,7 +143,7 @@
 
   <!-- Mined sentences -->
   <section aria-label="Frases minadas">
-    <h2 class="mb-3 text-2xl font-extrabold">Tu colección <span class="text-lg font-semibold text-white/50">({sentences.length})</span></h2>
+    <h2 class="mb-3 text-2xl font-extrabold">Tu colección <span class="text-lg font-semibold text-white/50">({total})</span></h2>
     {#if sentences.length === 0}
       <div class="card p-8 text-center">
         <p class="text-4xl" aria-hidden="true">💬</p>
@@ -122,18 +162,8 @@
           </button>
           <div class="min-w-0 flex-1">
             <p class="text-lg font-semibold leading-snug">{s.es}</p>
-            {#if showEn[s.id] && s.en}
-              <p class="text-base text-white/55">{s.en}</p>
-            {/if}
             <span class="mt-1 inline-block rounded-full bg-white/10 px-2.5 py-0.5 text-xs font-bold text-white/50">{s.source}</span>
           </div>
-          <button
-            class="pressable rounded-full bg-white/10 px-3 py-2 text-sm font-bold hover:bg-white/20"
-            aria-label={showEn[s.id] ? "Ocultar traducción" : "Mostrar traducción"}
-            onclick={() => toggleEn(s.id)}
-          >
-            {showEn[s.id] ? "🙈" : "🌐"}
-          </button>
           {#if s.inDeck}
             <span class="rounded-full bg-lime-500/20 px-3.5 py-1.5 text-sm font-extrabold text-lime-500">✓ en el mazo</span>
           {:else}
@@ -147,5 +177,14 @@
         </div>
       {/each}
     </div>
+    {#if sentences.length < total}
+      <button
+        class="pressable mx-auto mt-4 block rounded-full bg-white/10 px-6 py-2.5 text-base font-bold hover:bg-white/20"
+        disabled={loadingMore}
+        onclick={loadMore}
+      >
+        Ver {plural(total - sentences.length, "frase más", "frases más")}
+      </button>
+    {/if}
   </section>
 </div>

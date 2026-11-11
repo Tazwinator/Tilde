@@ -3,7 +3,6 @@ import type {
   BackupFolder,
   Badge,
   ImportReport,
-  MinedSentence,
   PlacementAnswer,
   PlacementItem,
   PlacementResult,
@@ -11,6 +10,7 @@ import type {
   Round,
   RoundFeedback,
   RoundResult,
+  SentencePage,
   SessionKind,
   SessionStart,
   SessionSummary,
@@ -115,8 +115,10 @@ export const api = {
     return invoke<ImportReport>("srt_import", { title, text });
   },
 
-  async listSentences(): Promise<MinedSentence[]> {
-    return invoke<MinedSentence[]>("sentences_list");
+  /** A page of mined sentences, newest first: the first page, or the one
+   * after the sentence with id `beforeId` (the last one already shown). */
+  async listSentences(beforeId?: number): Promise<SentencePage> {
+    return invoke<SentencePage>("sentences_list", { beforeId });
   },
 
   async addSentenceToDeck(id: number): Promise<void> {

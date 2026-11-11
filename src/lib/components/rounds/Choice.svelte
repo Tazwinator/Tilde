@@ -52,7 +52,7 @@
           {chosen === null
           ? 'border-white/10 bg-white/5 hover:-translate-y-0.5 hover:border-grape-400/60 hover:bg-white/10'
           : i === round.answerIndex
-            ? 'anim-pop border-lime-500 bg-lime-500/25 shadow-lg shadow-lime-500/20'
+            ? 'anim-reveal border-lime-500 bg-lime-500/25 shadow-lg shadow-lime-500/20'
             : i === chosen
               ? 'anim-shake border-coral-500 bg-coral-500/25'
               : 'border-white/5 bg-white/[0.02] opacity-40'}"

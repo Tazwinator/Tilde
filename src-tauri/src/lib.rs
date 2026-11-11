@@ -595,7 +595,10 @@ fn in_content(state: &AppState, word_id: i64) -> bool {
 }
 
 fn hit(conn: &Connection, w: &tilde_core::types::WordCard) -> WordHit {
-    session::to_hit(w, deck::is_known(conn, w.word_id))
+    let in_deck = conn
+        .query_row("SELECT EXISTS(SELECT 1 FROM cards WHERE word_id = ?1)", [w.word_id], |r| r.get(0))
+        .unwrap_or(false);
+    session::to_hit(w, deck::is_known(conn, w.word_id), in_deck)
 }
 
 #[tauri::command(async)]
@@ -634,8 +637,7 @@ fn word_detail(state: tauri::State<AppState>, word_id: i64) -> Option<WordDetail
     };
     let sentences = state
         .content
-        .lock()
-        .unwrap()
+        .locked()
         .sentences_for_word(word_id, 6)
         .into_iter()
         .map(|(id, es, en)| ExSentence {
@@ -779,24 +781,43 @@ fn srt_import(state: tauri::State<AppState>, title: String, text: String) -> Res
     })
 }
 
-#[tauri::command(async)]
-fn sentences_list(state: tauri::State<AppState>) -> Vec<MinedSentence> {
-    let conn = state.user.locked();
+/// One page of the mined sentences, newest first: the ones below `before_id`
+/// (the last id of the page before), or the newest when there is none. Paged
+/// by id, not by offset, so an import between two pages shifts nothing.
+fn mined_page(conn: &Connection, before_id: Option<i64>, limit: Option<i64>) -> tilde_core::types::SentencePage {
+    let limit = limit.unwrap_or(100).clamp(1, 500);
     let mut stmt = conn
-        .prepare("SELECT id, es, en, source, created_at, in_deck FROM mined ORDER BY id DESC LIMIT 500")
+        .prepare(
+            "SELECT id, es, en, source, created_at, in_deck FROM mined
+             WHERE (?1 IS NULL OR id < ?1) ORDER BY id DESC LIMIT ?2",
+        )
         .unwrap();
-    stmt.query_map([], |r| {
-        Ok(MinedSentence {
-            id: r.get(0)?,
-            es: r.get(1)?,
-            en: r.get(2)?,
-            source: r.get(3)?,
-            created_at: r.get(4)?,
-            in_deck: r.get::<_, i64>(5)? == 1,
+    let sentences = stmt
+        .query_map(rusqlite::params![before_id, limit], |r| {
+            Ok(MinedSentence {
+                id: r.get(0)?,
+                es: r.get(1)?,
+                en: r.get(2)?,
+                source: r.get(3)?,
+                created_at: r.get(4)?,
+                in_deck: r.get::<_, i64>(5)? == 1,
+            })
         })
-    })
-    .map(|rows| rows.filter_map(|r| r.ok()).collect())
-    .unwrap_or_default()
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default();
+    let total = conn
+        .query_row("SELECT COUNT(*) FROM mined", [], |r| r.get(0))
+        .unwrap_or(0);
+    tilde_core::types::SentencePage { sentences, total }
+}
+
+#[tauri::command(async)]
+fn sentences_list(
+    state: tauri::State<AppState>,
+    before_id: Option<i64>,
+    limit: Option<i64>,
+) -> tilde_core::types::SentencePage {
+    mined_page(&state.user.locked(), before_id, limit)
 }
 
 #[tauri::command(async)]
@@ -820,6 +841,31 @@ fn sentence_add_to_deck(state: tauri::State<AppState>, id: i64) -> Result<(), St
 }
 
 // --- stats ---
+
+/// One point per local calendar day (the day's last count), labelled
+/// YYYY-MM-DD so points from different years never share a label. `rows` are
+/// `(ts, words known)`, oldest first.
+fn words_by_day<Tz: chrono::TimeZone>(rows: &[(i64, i64)], tz: &Tz) -> Vec<SeriesPoint> {
+    let mut days: Vec<(chrono::NaiveDate, i64)> = Vec::new();
+    for &(ts, words) in rows {
+        let Some(day) = tz.timestamp_opt(ts, 0).single().map(|t| t.date_naive()) else {
+            continue;
+        };
+        match days.last_mut() {
+            // `<=`, not `==`: where the clocks are put back across midnight,
+            // a later moment has the earlier date. It joins the day already
+            // open, so the dates only ever go forward.
+            Some(last) if day <= last.0 => last.1 = words,
+            _ => days.push((day, words)),
+        }
+    }
+    days.into_iter()
+        .map(|(day, words)| SeriesPoint {
+            label: day.format("%Y-%m-%d").to_string(),
+            value: words as f64,
+        })
+        .collect()
+}
 
 #[tauri::command(async)]
 fn stats_get(state: tauri::State<AppState>) -> StatsData {
@@ -846,7 +892,7 @@ fn stats_get(state: tauri::State<AppState>) -> StatsData {
     let mut xp_per_week = Vec::new();
     for w in (0..8).rev() {
         let (mins, xp) = buckets.get(&w).copied().unwrap_or((0.0, 0));
-        let label = if w == 0 { "now".to_string() } else { format!("-{w}w") };
+        let label = if w == 0 { "ahora".to_string() } else { format!("-{w} sem") };
         minutes_per_week.push(SeriesPoint {
             label: label.clone(),
             value: mins.round(),
@@ -857,7 +903,7 @@ fn stats_get(state: tauri::State<AppState>) -> StatsData {
         });
     }
 
-    let mut cumulative: Vec<(i64, i64)> = {
+    let cumulative: Vec<(i64, i64)> = {
         let mut stmt = conn
             .prepare("SELECT ts, meta FROM events ORDER BY ts")
             .unwrap();
@@ -877,29 +923,16 @@ fn stats_get(state: tauri::State<AppState>) -> StatsData {
         })
         .unwrap_or_default()
     };
-    // one point per day: the last count of the day, not the first
-    cumulative.reverse();
-    cumulative.dedup_by(|later, kept| later.0 / 86400 == kept.0 / 86400);
-    cumulative.reverse();
-    let cumulative_words: Vec<SeriesPoint> = cumulative
-        .iter()
-        .map(|(ts, w)| {
-            SeriesPoint {
-                label: chrono::DateTime::from_timestamp(*ts, 0)
-                    .map(|d| d.format("%d/%m").to_string())
-                    .unwrap_or_default(),
-                value: *w as f64,
-            }
-        })
-        .collect();
+    let cumulative_words = words_by_day(&cumulative, &chrono::Local);
 
-    let accuracy_all_time: f32 = conn
+    // NULL with no graded round yet: that is "nothing to say", not 0%
+    let accuracy_all_time: Option<f32> = conn
         .query_row(
-            "SELECT COALESCE(AVG(correct), 0.0) FROM round_log WHERE round_type != 'new_word'",
+            "SELECT AVG(correct) FROM round_log WHERE round_type != 'new_word'",
             [],
             |r| r.get(0),
         )
-        .unwrap_or(0.0);
+        .unwrap_or(None);
     let mut game_mix: Vec<(String, i64)> = {
         let mut stmt = conn
             .prepare(

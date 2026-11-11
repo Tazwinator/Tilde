@@ -43,16 +43,27 @@
     setTimeout(() => (errorMsg = null), 6000);
   }
 
+  function whenAt(unixSeconds: number): string {
+    return new Date(unixSeconds * 1000).toLocaleString("es-ES", { dateStyle: "medium", timeStyle: "short" });
+  }
+
   function when(b: BackupInfo): string {
-    return new Date(b.createdAt * 1000).toLocaleString("es-ES", { dateStyle: "medium", timeStyle: "short" });
+    return whenAt(b.createdAt);
   }
 
   async function save() {
     if (!settings) return;
-    settings = await api.setSettings({ ...settings });
-    setSfxEnabled(settings.soundEnabled);
-    savedFlash = true;
-    setTimeout(() => (savedFlash = false), 1500);
+    try {
+      // what comes back is what was stored: the form and the sound follow that
+      settings = await api.setSettings({ ...settings });
+      setSfxEnabled(settings.soundEnabled);
+      savedFlash = true;
+      setTimeout(() => (savedFlash = false), 1500);
+    } catch (e) {
+      showError(e);
+      // never show a value that isn't saved
+      settings = await api.getSettings();
+    }
   }
 
   async function chooseFolder() {
@@ -66,7 +77,11 @@
   }
 
   async function useDefaultFolder() {
-    folder = await api.setBackupFolder(null);
+    try {
+      folder = await api.setBackupFolder(null);
+    } catch (e) {
+      showError(e);
+    }
   }
 
   async function exportBackup() {
@@ -252,6 +267,12 @@
       </div>
       {#if backupPath}
         <p class="anim-pop mt-3 break-all rounded-2xl bg-lime-500/10 p-3 font-mono text-base text-lime-500">{backupPath}</p>
+      {/if}
+
+      {#if folder?.lastError}
+        <p class="mt-4 break-words rounded-2xl bg-coral-500/15 p-3 text-base font-bold text-coral-500" role="alert">
+          ⚠️ La última copia automática no se pudo guardar ({whenAt(folder.lastError.at)}): {folder.lastError.message}
+        </p>
       {/if}
 
       {#if folder && folder.backups.length > 0}

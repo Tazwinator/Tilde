@@ -263,6 +263,8 @@ pub struct WordHit {
     pub gloss_es: Option<String>,
     pub level: String,
     pub known: bool,
+    /// The player has a card for the word, known or still being learned.
+    pub in_deck: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -323,6 +325,15 @@ pub struct MinedSentence {
     pub in_deck: bool,
 }
 
+/// One page of the mined sentences, newest first.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SentencePage {
+    pub sentences: Vec<MinedSentence>,
+    /// How many sentences there are in all, not just on this page.
+    pub total: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SeriesPoint {
@@ -335,8 +346,10 @@ pub struct SeriesPoint {
 pub struct StatsData {
     pub minutes_per_week: Vec<SeriesPoint>,
     pub xp_per_week: Vec<SeriesPoint>,
+    /// One point per day played; `label` is the local date, `YYYY-MM-DD`.
     pub cumulative_words: Vec<SeriesPoint>,
-    pub accuracy_all_time: f32,
+    /// `None` until a round has been graded: "no answers yet" is not 0%.
+    pub accuracy_all_time: Option<f32>,
     pub game_mix: Vec<SeriesPoint>,
 }
 

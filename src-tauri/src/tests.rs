@@ -195,7 +195,7 @@ fn srt_import_matches_words_from_content_db() {
                3\n00:00:07,000 --> 00:00:09,000\nMi hermano vive en Madrid con su mujer.\n";
     let (report, listed) = with_app(move |app| {
         let report = srt_import(app.state(), "test.srt".into(), srt.into()).unwrap();
-        (report, sentences_list(app.state()))
+        (report, sentences_list(app.state(), None, None).sentences)
     });
     assert_eq!(report.sentences_found, 3);
     assert!(report.sentences_added > 0, "{report:?}");
@@ -206,7 +206,7 @@ fn srt_import_matches_words_from_content_db() {
     let again = with_app(move |app| {
         srt_import(app.state(), "test.srt".into(), srt.into()).unwrap();
         let second = srt_import(app.state(), "test.srt".into(), srt.into()).unwrap();
-        (second.sentences_added, sentences_list(app.state()).len())
+        (second.sentences_added, sentences_list(app.state(), None, None).sentences.len())
     });
     assert_eq!(again, (0, listed.len()));
 }
@@ -222,7 +222,7 @@ fn a_sentence_from_another_file_is_not_mined_twice() {
     let (added, listed) = with_app(move |app| {
         srt_import(app.state(), "uno.srt".into(), first.into()).unwrap();
         let report = srt_import(app.state(), "dos.srt".into(), second.into()).unwrap();
-        (report.sentences_added, sentences_list(app.state()))
+        (report.sentences_added, sentences_list(app.state(), None, None).sentences)
     });
     assert_eq!(added, 1, "{listed:?}");
     assert_eq!(listed.len(), 3);
@@ -267,7 +267,7 @@ fn an_ellipsis_split_sentence_is_mined_whole() {
                2\n00:00:03,500 --> 00:00:05,000\n...no estaríamos aquí ahora.\n";
     let listed = with_app(move |app| {
         mine(app, "test.srt", srt);
-        sentences_list(app.state())
+        sentences_list(app.state(), None, None).sentences
     });
     let texts: Vec<&str> = listed.iter().map(|s| s.es.as_str()).collect();
     assert_eq!(texts, ["Si me hubieras dicho la verdad... no estaríamos aquí ahora."]);
@@ -299,7 +299,7 @@ fn a_decomposed_subtitle_file_is_stored_composed() {
     let srt = "1\n00:00:01,000 --> 00:00:03,000\nMi madre esta\u{301} en casa.\n";
     with_app(move |app| {
         mine(app, "test.srt", srt);
-        assert_eq!(sentences_list(app.state())[0].es, "Mi madre est\u{e1} en casa.");
+        assert_eq!(sentences_list(app.state(), None, None).sentences[0].es, "Mi madre est\u{e1} en casa.");
         assert!(mined_word(app, "estar"), "estar not linked");
 
         // a sentence an older version stored decomposed is still recognised
@@ -708,12 +708,12 @@ fn stats_use_real_durations_and_run_oldest_to_newest() {
         }
         let stats = stats_get(app.state());
         let labels: Vec<&str> = stats.minutes_per_week.iter().map(|p| p.label.as_str()).collect();
-        assert_eq!(labels, ["-7w", "-6w", "-5w", "-4w", "-3w", "-2w", "-1w", "now"]);
+        assert_eq!(labels, ["-7 sem", "-6 sem", "-5 sem", "-4 sem", "-3 sem", "-2 sem", "-1 sem", "ahora"]);
         let minutes: Vec<f64> = stats.minutes_per_week.iter().map(|p| p.value).collect();
         assert_eq!(minutes, [0.0, 0.0, 0.0, 0.0, 0.0, 20.0, 0.0, 10.0]);
         assert_eq!(stats.xp_per_week.last().map(|p| p.value), Some(50.0));
         // intros aren't answers: they count in neither accuracy nor the game mix
-        assert!((stats.accuracy_all_time - 0.5).abs() < 1e-6, "{}", stats.accuracy_all_time);
+        assert_eq!(stats.accuracy_all_time, Some(0.5));
         assert!(stats.game_mix.iter().all(|g| g.label != "new_word"));
     });
 }
@@ -814,7 +814,7 @@ fn mined_words_are_the_ones_in_the_sentence_not_their_relatives() {
         }
 
         // ...and adding the sentence to the deck must not teach those instead
-        let first = sentences_list(app.state()).into_iter().find(|s| s.es.contains("madre")).unwrap();
+        let first = sentences_list(app.state(), None, None).sentences.into_iter().find(|s| s.es.contains("madre")).unwrap();
         sentence_add_to_deck(app.state(), first.id).unwrap();
         let padre = id("padre");
         let carded: bool = state
@@ -1332,7 +1332,7 @@ fn marking_a_word_known_reports_a_failed_write() {
     let srt = "1\n00:00:01,000 --> 00:00:03,000\n¿Dónde está la casa de tu madre?\n";
     with_app(move |app| {
         srt_import(app.state(), "test.srt".into(), srt.into()).unwrap();
-        let sentence = sentences_list(app.state()).remove(0);
+        let sentence = sentences_list(app.state(), None, None).sentences.remove(0);
         let casa = word_search(app.state(), "casa".into(), 1)[0].word_id;
         word_mark_known(app.state(), casa).unwrap();
 
@@ -1343,11 +1343,11 @@ fn marking_a_word_known_reports_a_failed_write() {
         assert!(word_reset(app.state(), casa).is_err());
         assert!(sentence_add_to_deck(app.state(), sentence.id).is_err());
         assert_eq!(count(app, "cards"), 1);
-        assert!(!sentences_list(app.state())[0].in_deck, "the sentence says it is in the deck, but its words aren't");
+        assert!(!sentences_list(app.state(), None, None).sentences[0].in_deck, "the sentence says it is in the deck, but its words aren't");
 
         sql(app, "DROP TRIGGER no_cards; DROP TRIGGER no_forgetting;");
         sentence_add_to_deck(app.state(), sentence.id).unwrap();
-        assert!(sentences_list(app.state())[0].in_deck);
+        assert!(sentences_list(app.state(), None, None).sentences[0].in_deck);
         word_reset(app.state(), casa).unwrap();
         assert!(count(app, "cards") >= 1);
     });
@@ -2058,6 +2058,162 @@ fn adding_a_sentence_skips_words_not_in_content() {
         sentence_add_to_deck(app.state(), 7).unwrap();
         assert_eq!(card(app, real), Some((0.0, 1)));
         assert_eq!(card(app, orphan), None, "a card was made for a word that doesn't exist");
-        assert!(sentences_list(app.state())[0].in_deck);
+        assert!(sentences_list(app.state(), None, None).sentences[0].in_deck);
+    });
+}
+
+// --- stats, Explorar and Frases ---
+
+#[test]
+fn stats_days_are_local_and_keep_the_year() {
+    use chrono::{FixedOffset, TimeZone, Utc};
+    let at = |y, mo, d, h, mi| Utc.with_ymd_and_hms(y, mo, d, h, mi, 0).unwrap().timestamp();
+    let labels = |points: &[SeriesPoint]| points.iter().map(|p| p.label.clone()).collect::<Vec<_>>();
+
+    // the same day a year apart is two points, told apart by the year
+    let years = words_by_day(&[(at(2025, 10, 5, 12, 0), 40), (at(2026, 10, 5, 12, 0), 90)], &Utc);
+    assert_eq!(labels(&years), ["2025-10-05", "2026-10-05"]);
+
+    // 23:30 UTC is already tomorrow in a Madrid summer (UTC+2)
+    let madrid = FixedOffset::east_opt(2 * 3600).unwrap();
+    let rows = [
+        (at(2026, 10, 5, 12, 0), 10),
+        (at(2026, 10, 5, 23, 30), 12),
+        (at(2026, 10, 6, 9, 0), 15),
+    ];
+    let days = words_by_day(&rows, &madrid);
+    assert_eq!(labels(&days), ["2026-10-05", "2026-10-06"]);
+    // each day shows its last count, not its first
+    assert_eq!(days.iter().map(|p| p.value).collect::<Vec<_>>(), [10.0, 15.0]);
+
+    // a later moment with an earlier date (clocks put back across midnight)
+    // doesn't make the chart turn round
+    let back = words_by_day(&[(at(2026, 10, 6, 0, 10), 20), (at(2026, 10, 5, 23, 40), 21)], &Utc);
+    assert_eq!(labels(&back), ["2026-10-06"]);
+    assert_eq!(back[0].value, 21.0);
+}
+
+#[test]
+fn accuracy_is_unknown_before_any_graded_round() {
+    with_app(|app| {
+        assert_eq!(stats_get(app.state()).accuracy_all_time, None);
+        // an intro card is not an answer
+        sql(app, "INSERT INTO round_log(ts, session_id, round_type, correct) VALUES (1, 1, 'new_word', 1)");
+        assert_eq!(stats_get(app.state()).accuracy_all_time, None);
+        // ...and one wrong answer is 0%, which is not the same as nothing
+        sql(app, "INSERT INTO round_log(ts, session_id, round_type, correct) VALUES (2, 1, 'choice', 0)");
+        assert_eq!(stats_get(app.state()).accuracy_all_time, Some(0.0));
+    });
+}
+
+#[test]
+fn sentences_list_pages_newest_first_with_a_total() {
+    with_app(|app| {
+        let mine = |n: i64| {
+            sql(app, &format!(
+                "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < {n})
+                 INSERT INTO mined(es, source, created_at) SELECT 'Frase ' || i, 'test.srt', i FROM n"
+            ));
+        };
+        mine(250);
+        let ids = |page: &tilde_core::types::SentencePage| page.sentences.iter().map(|s| s.id).collect::<Vec<_>>();
+        let mut seen = Vec::new();
+        let mut before = None;
+        for expected in [151..=250, 51..=150, 1..=50] {
+            let page = sentences_list(app.state(), before, None);
+            assert_eq!(page.total, 250);
+            assert_eq!(ids(&page), expected.rev().collect::<Vec<_>>());
+            before = page.sentences.last().map(|s| s.id);
+            seen.extend(ids(&page));
+        }
+        assert_eq!(seen, (1..=250).rev().collect::<Vec<_>>());
+        let past_the_end = sentences_list(app.state(), before, None);
+        assert!(past_the_end.sentences.is_empty());
+        assert_eq!(past_the_end.total, 250);
+
+        // sentences mined between two pages move nothing: the next page
+        // still starts right below the last one seen
+        mine(300);
+        assert_eq!(ids(&sentences_list(app.state(), Some(151), None)), (51..=150).rev().collect::<Vec<_>>());
+
+        // the page size has a floor and a ceiling
+        let state = app.state::<AppState>();
+        let conn = state.user.lock().unwrap();
+        assert_eq!(ids(&mined_page(&conn, None, Some(0))), [550]);
+        let all = mined_page(&conn, None, Some(100_000));
+        assert_eq!((all.sentences.len(), all.total), (500, 550));
+
+        let wire = serde_json::to_value(&all).unwrap();
+        assert!(wire["sentences"][0]["inDeck"].is_boolean() && wire["total"] == 550, "{wire}");
+    });
+}
+
+#[test]
+fn word_hit_marks_cards_in_progress() {
+    with_app(|app| {
+        let casa = || word_search(app.state(), "casa".into(), 1).remove(0);
+        let word = casa();
+        assert!(!word.in_deck && !word.known);
+
+        {
+            let state = app.state::<AppState>();
+            let conn = state.user.lock().unwrap();
+            deck::introduce(&conn, word.word_id).unwrap();
+        }
+        let learning = casa();
+        assert!(learning.in_deck, "a word with a card is in the deck");
+        assert!(!learning.known, "a word just met is not known yet");
+        assert_eq!(serde_json::to_value(&learning).unwrap()["inDeck"], true);
+        assert!(word_detail(app.state(), word.word_id).unwrap().word.in_deck);
+
+        word_mark_known(app.state(), word.word_id).unwrap();
+        let known = casa();
+        assert!(known.in_deck && known.known);
+
+        word_reset(app.state(), word.word_id).unwrap();
+        assert!(!casa().in_deck);
+    });
+}
+
+/// Field names of an `export interface` in `src/lib/contract.ts`.
+fn ts_interface_keys(name: &str) -> Vec<String> {
+    let ts = include_str!("../../src/lib/contract.ts");
+    let start = ts
+        .find(&format!("export interface {name} {{"))
+        .unwrap_or_else(|| panic!("no interface {name} in contract.ts"));
+    let body = &ts[start..start + ts[start..].find("\n}").unwrap()];
+    let mut keys: Vec<String> = body
+        .lines()
+        .skip(1)
+        .map(str::trim)
+        .filter(|l| !l.starts_with("/*") && !l.starts_with('*') && !l.starts_with("//"))
+        .filter_map(|l| l.split_once(':'))
+        .map(|(k, _)| k.trim_end_matches('?').to_string())
+        .collect();
+    keys.sort();
+    keys
+}
+
+#[test]
+fn stats_word_and_sentence_wire_formats_match_contract_ts() {
+    // Each sample is what a command returns, not a struct written out here:
+    // a field added to one of these types changes contract.ts, not this test.
+    with_app(|app| {
+        // as after an automatic backup that failed, so that `lastError` is filled in
+        app.state::<AppState>().backup_failed("disk on fire".into());
+        let folder = serde_json::to_value(backup_folder(app.state())).unwrap();
+        let samples = [
+            ("WordHit", serde_json::to_value(word_search(app.state(), "casa".into(), 1).remove(0)).unwrap()),
+            ("SentencePage", serde_json::to_value(sentences_list(app.state(), None, None)).unwrap()),
+            ("StatsData", serde_json::to_value(stats_get(app.state())).unwrap()),
+            ("BackupProblem", folder["lastError"].clone()),
+            ("BackupFolder", folder),
+        ];
+        for (name, value) in samples {
+            let fields = value.as_object().unwrap_or_else(|| panic!("{name} is not an object: {value}"));
+            let mut keys: Vec<String> = fields.keys().cloned().collect();
+            keys.sort();
+            assert_eq!(keys, ts_interface_keys(name), "{name} in types.rs and in contract.ts");
+        }
     });
 }

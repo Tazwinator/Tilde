@@ -2,6 +2,8 @@
   import { goto } from "$app/navigation";
   import { fade } from "svelte/transition";
   import { api } from "$lib/api";
+  import { plural } from "$lib/format";
+  import { motion } from "$lib/motion";
   import { sfx } from "$lib/sfx";
   import type { Badge, Profile } from "$lib/contract";
 
@@ -47,7 +49,9 @@
           <span class="text-3xl font-black leading-none">{profile.level}</span>
           <span class="text-[11px] font-semibold uppercase tracking-wider opacity-90">nivel</span>
         </div>
-        <div class="min-w-0 flex-1">
+        <!-- a floor on the title column: when there is less room than that
+          beside the chips, they take a row of their own instead of squeezing it -->
+        <div class="min-w-[15rem] flex-1">
           <h1 class="text-3xl font-extrabold tracking-tight">
             ¡Hola! <span class="text-grape-400">Nivel {profile.level} · {profile.levelName}</span>
           </h1>
@@ -60,21 +64,21 @@
           <p class="mt-1.5 text-sm text-white/60">{profile.xp} XP · {Math.round(profile.levelProgress * 100)}% hacia el siguiente nivel</p>
         </div>
         <div class="flex flex-wrap gap-2.5">
-          <span class="rounded-full bg-tubo-500/20 px-4 py-1.5 text-base font-bold text-tubo-500" title="Estimación CEFR">MCER {profile.cefrEstimate}</span>
-          <span class="rounded-full bg-white/10 px-4 py-1.5 text-base font-bold" title="Minutos totales">⏱ {profile.minutesTotal} min</span>
-          <span class="rounded-full bg-lime-500/20 px-4 py-1.5 text-base font-bold text-lime-500" title="Palabras conocidas">📖 {profile.wordsKnown} palabras</span>
+          <span class="whitespace-nowrap rounded-full bg-tubo-500/20 px-4 py-1.5 text-base font-bold text-tubo-500" title="Estimación CEFR">MCER {profile.cefrEstimate}</span>
+          <span class="whitespace-nowrap rounded-full bg-white/10 px-4 py-1.5 text-base font-bold" title="Minutos totales">⏱ {profile.minutesTotal} min</span>
+          <span class="whitespace-nowrap rounded-full bg-lime-500/20 px-4 py-1.5 text-base font-bold text-lime-500" title="Palabras conocidas">📖 {plural(profile.wordsKnown, "palabra", "palabras")}</span>
         </div>
       </div>
     </header>
 
     <!-- Welcome back banner -->
     {#if profile.daysSinceLastSession >= 3}
-      <section class="card anim-rise flex items-center gap-4 border-grape-400/30 bg-gradient-to-r from-grape-500/20 to-transparent p-6" in:fade={{ duration: 300 }}>
+      <section class="card anim-rise flex items-center gap-4 border-grape-400/30 bg-gradient-to-r from-grape-500/20 to-transparent p-6" in:fade={{ duration: motion(300) }}>
         <span class="anim-float text-5xl" aria-hidden="true">👋</span>
         <div class="flex-1">
           <h2 class="text-2xl font-extrabold">¡Qué gusto verte!</h2>
           <p class="text-lg text-white/80">
-            Tus {profile.wordsKnown} palabras siguen aquí, esperándote.
+            {profile.wordsKnown >= 2 ? `Tus ${profile.wordsKnown} palabras siguen aquí, esperándote.` : "Lo que has aprendido sigue aquí, esperándote."}
             {profile.reviewsDue > 0 ? "Un repaso de 4 minutos y a tope." : "Una sesión rápida de 3 minutos y a tope."}
           </p>
         </div>
@@ -101,10 +105,10 @@
             <span class="min-w-0 flex-1">
               <span class="block text-xl font-extrabold">{c.title}</span>
               <span class="block text-base text-white/60">{c.desc}</span>
-              <span class="mt-1 flex gap-2 text-sm font-semibold">
-                <span class="rounded-full bg-coral-500/20 px-2.5 py-0.5 text-coral-500">🔔 {profile.reviewsDue} {profile.reviewsDue === 1 ? "repaso" : "repasos"}</span>
+              <span class="mt-1 flex flex-wrap gap-2 text-sm font-semibold">
+                <span class="whitespace-nowrap rounded-full bg-coral-500/20 px-2.5 py-0.5 text-coral-500">🔔 {plural(profile.reviewsDue, "repaso", "repasos")}</span>
                 {#if fresh > 0}
-                  <span class="rounded-full bg-tubo-500/20 px-2.5 py-0.5 text-tubo-500">✨ {fresh} {fresh === 1 ? "nueva" : "nuevas"}</span>
+                  <span class="whitespace-nowrap rounded-full bg-tubo-500/20 px-2.5 py-0.5 text-tubo-500">✨ {plural(fresh, "nueva", "nuevas")}</span>
                 {/if}
               </span>
             </span>
@@ -148,7 +152,8 @@
 
     <!-- Footer nudge (positive framing) -->
     <p class="pb-4 text-center text-lg text-white/50">
-      Cada palabra cuenta · llevas <strong class="text-white/80">{profile.sessionsTotal} sesiones</strong> jugadas 🎉
+      Cada palabra cuenta · llevas <strong class="text-white/80">{plural(profile.sessionsTotal, "sesión", "sesiones")}</strong>
+      {profile.sessionsTotal === 1 ? "jugada" : "jugadas"} 🎉
     </p>
   </div>
 {:else}

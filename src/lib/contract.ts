@@ -124,6 +124,8 @@ export interface WordHit {
   glossEs: string | null;
   level: string;
   known: boolean;
+  /** the player has a card for the word, known or still being learned */
+  inDeck: boolean;
 }
 
 export interface ConjRow {
@@ -172,6 +174,13 @@ export interface MinedSentence {
   inDeck: boolean;
 }
 
+/** One page of the mined sentences, newest first. */
+export interface SentencePage {
+  sentences: MinedSentence[];
+  /** how many sentences there are in all, not just on this page */
+  total: number;
+}
+
 export interface SeriesPoint {
   label: string;
   value: number;
@@ -180,8 +189,10 @@ export interface SeriesPoint {
 export interface StatsData {
   minutesPerWeek: SeriesPoint[];
   xpPerWeek: SeriesPoint[];
+  /** one point per day played; `label` is the local date, `YYYY-MM-DD` */
   cumulativeWords: SeriesPoint[];
-  accuracyAllTime: number;
+  /** `null` until a round has been graded: "no answers yet" is not 0% */
+  accuracyAllTime: number | null;
   gameMix: SeriesPoint[];
 }
 
@@ -207,8 +218,16 @@ export interface BackupInfo {
   sizeBytes: number;
 }
 
+/** A backup that could not be written, for Settings to show. */
+export interface BackupProblem {
+  message: string;
+  at: number; // unix seconds
+}
+
 export interface BackupFolder {
   dir: string;
   isDefault: boolean;
   backups: BackupInfo[]; // newest first
+  /** set while the latest automatic backup into this folder has failed */
+  lastError: BackupProblem | null;
 }

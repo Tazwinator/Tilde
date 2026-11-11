@@ -10,7 +10,7 @@ use tilde_core::types::{
     SessionKind, SessionSummary, WordCard,
 };
 
-pub fn to_hit(w: &WordCard, known: bool) -> tilde_core::types::WordHit {
+pub fn to_hit(w: &WordCard, known: bool, in_deck: bool) -> tilde_core::types::WordHit {
     tilde_core::types::WordHit {
         word_id: w.word_id,
         lemma: w.lemma.clone(),
@@ -20,6 +20,7 @@ pub fn to_hit(w: &WordCard, known: bool) -> tilde_core::types::WordHit {
         gloss_es: w.gloss_es.clone(),
         level: w.level.clone(),
         known,
+        in_deck,
     }
 }
 

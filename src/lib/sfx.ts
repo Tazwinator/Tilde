@@ -1,8 +1,6 @@
 // Hand-rolled WebAudio synth SFX — no assets.
 // All sounds are short (<0.6s) oscillator + gain envelope blips.
 
-const LS_KEY = "tilde.sound.enabled";
-
 let ctx: AudioContext | null = null;
 
 function audioCtx(): AudioContext | null {
@@ -21,26 +19,26 @@ function audioCtx(): AudioContext | null {
   }
 }
 
-function loadEnabled(): boolean {
-  try {
-    return localStorage.getItem(LS_KEY) !== "0";
-  } catch {
-    return true;
-  }
-}
-
-let enabled = typeof localStorage !== "undefined" ? loadEnabled() : true;
+// muted until the saved setting arrives (layout), so a player who turned sound off never hears a stray click
+let enabled = false;
 
 export function sfxEnabled(): boolean {
   return enabled;
 }
 
+/** The "Sonidos" setting, as saved with the player's progress: the one place
+ * it is kept, so the switch in Ajustes and what is heard can't disagree. */
 export function setSfxEnabled(v: boolean): void {
   enabled = v;
+}
+
+/** Tilde used to keep its own copy of the setting in the browser, and the two
+ * drifted apart after a reset or a restore. Nothing reads it any more. */
+export function forgetLegacySoundFlag(): void {
   try {
-    localStorage.setItem(LS_KEY, v ? "1" : "0");
+    localStorage.removeItem("tilde.sound.enabled");
   } catch {
-    /* ignore */
+    /* no storage: nothing to forget */
   }
 }
 

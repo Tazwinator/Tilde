@@ -240,7 +240,11 @@
   {:else if view.phase === "done" && view.summary}
     <div class="m-auto text-center">
       <p class="text-4xl font-black">¡Hecho! ⚡ {view.summary.xp} XP</p>
-      <p class="mt-2 text-lg text-white/50">{view.summary.correct}/{view.summary.rounds} aciertos · Esc para salir</p>
+      <!-- the button is part of the sentence, which must not break before it -->
+      <p class="mt-2 whitespace-nowrap text-lg text-white/50">
+        {view.summary.correct}/{view.summary.rounds} aciertos · pulsa Esc o
+        <button class="rounded-full bg-grape-500 px-4 py-1 font-bold text-white/90" onclick={() => goto("/")}>volver</button>
+      </p>
       {#each badges as b (b.id)}
         <p class="mt-3 text-lg">
           <span aria-hidden="true">🏅</span>
@@ -248,9 +252,6 @@
           <span class="text-white/50">· {b.description}</span>
         </p>
       {/each}
-      <button class="mt-4 rounded-full bg-grape-500 px-6 py-2 text-lg font-bold" onclick={() => goto("/")}>
-        volver
-      </button>
     </div>
   {/if}
 </div>

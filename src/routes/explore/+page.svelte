@@ -1,9 +1,13 @@
 <script lang="ts">
+  import { tick } from "svelte";
+  import { prefersReducedMotion } from "svelte/motion";
   import { api } from "$lib/api";
   import { confettiCenter } from "$lib/confetti";
   import { sfx } from "$lib/sfx";
   import type { ConjRow, WordDetail, WordHit } from "$lib/contract";
   import { glossText, posLabel } from "$lib/defs";
+  import { dueIn } from "$lib/format";
+  import { createWordCard } from "$lib/wordCard";
 
   let query = $state("");
   let results = $state<WordHit[]>([]);
@@ -11,12 +15,35 @@
   let defLang = $state("en");
   let searching = $state(false);
   let activeTense = $state<string | null>(null);
+  let detailEl = $state<HTMLElement>();
+  let detailHeading = $state<HTMLElement>();
 
   const tenses = $derived.by(() => {
     const rows: ConjRow[] = detail?.conjugations ?? [];
     return [...new Set(rows.map((r) => r.tense))];
   });
-  const tenseRows = $derived((detail?.conjugations ?? []).filter((r) => r.tense === (activeTense ?? tenses[0])));
+  // the table opens on the present, wherever the data lists it
+  const shownTense = $derived(activeTense ?? (tenses.includes("presente") ? "presente" : tenses[0]));
+  const tenseRows = $derived((detail?.conjugations ?? []).filter((r) => r.tense === shownTense));
+
+  // Both lines are joined here, not in the markup: there Svelte trims the
+  // space at the edge of a block, and "verbo ·puesto" is what came out.
+  const meta = $derived(
+    detail
+      ? [detail.word.pos && posLabel(detail.word.pos), `puesto n.º ${detail.word.rank}`, detail.word.level].filter(Boolean).join(" · ")
+      : "",
+  );
+  // "conocida" or "aprendiendo", by the same flag as the list beside it and
+  // Home's count: never the scheduler's own state, which says something else
+  const cardLine = $derived(
+    detail?.card
+      ? [
+          detail.word.known ? "conocida" : "aprendiendo",
+          `repaso ${dueIn(detail.card.dueInDays)}`,
+          `fuerza ${Math.round(detail.card.strength * 100)}%`,
+        ].join(" · ")
+      : "",
+  );
 
   let debounce: ReturnType<typeof setTimeout> | undefined;
   function onInput() {
@@ -24,32 +51,58 @@
     debounce = setTimeout(() => void doSearch(), 250);
   }
 
+  // Answers can come back out of order; only the latest search fills the list.
+  let searches = 0;
   async function doSearch() {
+    const mine = ++searches;
     searching = true;
-    results = await api.searchWords(query.trim(), 50);
-    searching = false;
+    try {
+      const found = await api.searchWords(query.trim(), 50);
+      if (mine === searches) results = found;
+    } finally {
+      if (mine === searches) searching = false;
+    }
   }
+
+  // The same for a word's card, which is asked for by opening a word and by
+  // the two buttons on the open one: the last one asked for is the one shown.
+  const card = createWordCard(api);
 
   async function open(w: WordHit) {
     sfx.click();
-    detail = await api.wordDetail(w.wordId);
+    const found = await card.open(w.wordId);
+    if (!found) return;
+    detail = found;
     activeTense = null;
+    await tick();
+    if (!detailEl) return;
+    // In one column the card opens below the list, out of sight. Beside the
+    // list its top is already showing, and then the page stays where it is:
+    // "nearest" would not do, as it pulls any card taller than the window up
+    // to the top. (Measured on the panel, not the card, which is mid-pop.)
+    const top = detailEl.getBoundingClientRect().top;
+    if (top < 0 || top > window.innerHeight / 2) {
+      detailEl.scrollIntoView({ block: "start", behavior: prefersReducedMotion.current ? "auto" : "smooth" });
+    }
+    // and focus goes with it, so the card's buttons are the next Tab stop
+    detailHeading?.focus({ preventScroll: true });
   }
 
   async function markKnown() {
     if (!detail) return;
+    const found = await card.markKnown(detail.word.wordId);
+    // only now that it is saved: a change that failed must not sound like one that worked
     sfx.correct(0);
     confettiCenter(60);
-    await api.markWordKnown(detail.word.wordId);
-    detail = await api.wordDetail(detail.word.wordId);
+    if (found) detail = found;
     await doSearch();
   }
 
   async function resetWord() {
     if (!detail) return;
     sfx.click();
-    await api.resetWord(detail.word.wordId);
-    detail = await api.wordDetail(detail.word.wordId);
+    const found = await card.reset(detail.word.wordId);
+    if (found) detail = found;
     await doSearch();
   }
 
@@ -72,7 +125,7 @@
     bind:value={query}
     oninput={onInput}
     class="w-full rounded-3xl border-2 border-white/15 bg-white/5 px-6 py-4 text-xl font-semibold outline-none transition-colors focus:border-grape-400"
-    placeholder="Buscar palabra… (p. ej. hablar)"
+    placeholder="Buscar palabra o forma… (p. ej. hablar, tengo)"
     aria-label="Buscar palabras"
   />
 
@@ -96,24 +149,23 @@
           <span class="min-w-0 flex-1 truncate text-base text-white/55">{glossText(w, defLang)}</span>
           <span class="rounded-full bg-tubo-500/15 px-2.5 py-0.5 text-sm font-bold text-tubo-500">{w.level}</span>
           <span
-            class="rounded-full px-2.5 py-0.5 text-sm font-bold {w.known ? 'bg-lime-500/20 text-lime-500' : 'bg-white/10 text-white/50'}"
+            class="whitespace-nowrap rounded-full px-2.5 py-0.5 text-sm font-bold
+              {w.known ? 'bg-lime-500/20 text-lime-500' : w.inDeck ? 'bg-tubo-500/15 text-tubo-500' : 'bg-white/10 text-white/50'}"
           >
-            {w.known ? "✓ conocida" : "nueva"}
+            {w.known ? "✓ conocida" : w.inDeck ? "aprendiendo" : "nueva"}
           </span>
         </button>
       {/each}
     </div>
 
     <!-- Detail panel -->
-    <div>
+    <div bind:this={detailEl} class="scroll-mt-6">
       {#if detail}
         <div class="card anim-pop p-6">
           <div class="flex items-start gap-3">
             <div class="min-w-0 flex-1">
-              <h2 class="text-4xl font-black">{detail.word.lemma}</h2>
-              <p class="mt-0.5 text-base text-white/50">
-                {#if detail.word.pos}{posLabel(detail.word.pos)} · {/if}rank #{detail.word.rank} · {detail.word.level}
-              </p>
+              <h2 bind:this={detailHeading} tabindex="-1" class="text-4xl font-black">{detail.word.lemma}</h2>
+              <p class="mt-0.5 text-base text-white/50">{meta}</p>
             </div>
             <button
               class="pressable flex h-12 w-12 items-center justify-center rounded-full bg-gradient-to-br from-tubo-500 to-grape-500 text-xl shadow-lg hover:brightness-110"
@@ -136,9 +188,7 @@
           </dl>
 
           {#if detail.card}
-            <p class="mt-3 inline-block rounded-full bg-white/10 px-4 py-1.5 text-base font-bold">
-              📚 estado: {detail.card.state} · vence en {detail.card.dueInDays} día{detail.card.dueInDays === 1 ? "" : "s"} · fuerza {Math.round(detail.card.strength * 100)}%
-            </p>
+            <p class="mt-3 inline-block rounded-full bg-white/10 px-4 py-1.5 text-base font-bold">📚 {cardLine}</p>
           {:else}
             <p class="mt-3 inline-block rounded-full bg-white/10 px-4 py-1.5 text-base font-bold">🌱 sin tarjeta todavía</p>
           {/if}
@@ -159,7 +209,7 @@
               {#each tenses as t (t)}
                 <button
                   class="rounded-full px-4 py-1.5 text-base font-bold transition-colors
-                    {(activeTense ?? tenses[0]) === t ? 'bg-grape-500 text-white' : 'bg-white/10 text-white/60 hover:bg-white/20'}"
+                    {shownTense === t ? 'bg-grape-500 text-white' : 'bg-white/10 text-white/60 hover:bg-white/20'}"
                   onclick={() => (activeTense = t)}
                 >
                   {t}

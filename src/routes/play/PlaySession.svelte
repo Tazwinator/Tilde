@@ -281,6 +281,7 @@
       <svg width="180" height="180" viewBox="0 0 120 120" role="img" aria-label="Precisión {Math.round(summary.accuracy * 100)}%">
         <circle cx="60" cy="60" r="50" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="12" />
         <circle
+          class="anim-ring"
           cx="60"
           cy="60"
           r="50"
@@ -290,7 +291,6 @@
           stroke-linecap="round"
           stroke-dasharray="{(summary.accuracy * 2 * Math.PI * 50).toFixed(1)} 999"
           transform="rotate(-90 60 60)"
-          style="transition: stroke-dasharray 1s ease"
         />
         <text x="60" y="66" text-anchor="middle" font-size="28" font-weight="800" fill="#fff">{Math.round(summary.accuracy * 100)}%</text>
         <text x="60" y="84" text-anchor="middle" font-size="10" fill="rgba(255,255,255,0.5)">precisión</text>

@@ -4,6 +4,7 @@
   import { api } from "$lib/api";
   import { confettiCenter } from "$lib/confetti";
   import { reportError } from "$lib/errors.svelte";
+  import { plural } from "$lib/format";
   import { sfx } from "$lib/sfx";
   import type { PlacementAnswer, PlacementItem, PlacementResult } from "$lib/contract";
 
@@ -148,7 +149,12 @@
       <h1 class="text-4xl font-extrabold">¡Listo para empezar!</h1>
       <p class="mt-3 text-xl text-white/75">
         Tu nivel de salida: <strong class="text-tubo-500">{result.cefrEstimate}</strong> ·
-        marcamos <strong class="text-lime-500">{result.wordsMarkedKnown} palabras</strong> como conocidas.
+        {#if result.wordsMarkedKnown === 0}
+          empezamos por las palabras más comunes.
+        {:else}
+          marcamos <strong class="text-lime-500">{plural(result.wordsMarkedKnown, "palabra", "palabras")}</strong>
+          como {result.wordsMarkedKnown === 1 ? "conocida" : "conocidas"}.
+        {/if}
       </p>
       <p class="mt-2 text-lg text-white/55">A partir de aquí todo lo que aprendas se queda contigo para siempre.</p>
       <button
