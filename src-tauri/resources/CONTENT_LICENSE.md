@@ -11,7 +11,10 @@ The app's code is MIT-licensed separately (see `LICENSE` at the repo root).
 | Spanish definitions | [Wikcionario](https://es.wiktionary.org/) (the Spanish Wiktionary) contributors, extracted by [kaikki.org](https://kaikki.org/) | CC BY-SA 4.0 (also GFDL) |
 | Example sentences | [Tatoeba](https://tatoeba.org/) contributors, via [OPUS](https://opus.nlpl.eu/) (Tatoeba v2023-04-12) | CC BY 2.0 FR |
 
-The glosses and definitions were shortened and a few glosses rewritten by hand
-(`crates/tilde-pipeline/curation/`). The exact source files used are recorded
+The glosses and definitions were shortened. About 700 glosses are written by
+hand, and the Spanish definitions of the 3,000 or so commonest words were
+reviewed one by one, about two in five of them written for Tilde
+(`crates/tilde-pipeline/curation/`); these are shared under CC BY-SA 4.0 too.
+The exact source files used are recorded
 by SHA-256 in the database's `meta` table. The app shows this attribution
 under Ajustes → Créditos de los datos.
