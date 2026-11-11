@@ -4,8 +4,8 @@
 #
 # lemma<TAB>gloss, or lemma<TAB>gloss<TAB>pos when the part of speech the
 # pipeline would pick (that of the first Wiktionary entry with a usable
-# gloss) isn't the one the gloss describes: "veces" is first a preposition
-# there. pos is one of: noun verb adj adv pron det article prep conj
+# gloss) isn't the one the gloss describes: "sino" is first a noun there.
+# pos is one of: noun verb adj adv pron det article prep conj
 # contraction num particle intj. A word with a pos other than verb gets no
 # conjugation table. The build stops on a malformed row, a word listed twice,
 # or a word that is also in exclude.txt.
@@ -47,6 +47,7 @@ gustar	to like, to please
 siempre	always
 ahí	there
 poco	little, not much; few
+poca	little, not much (feminine of poco)	det
 seguro	sure, certain; safe; insurance
 acuerdo	agreement (de acuerdo: agreed, OK)
 hora	hour; time
@@ -59,12 +60,9 @@ pedir	to ask for, to order
 mano	hand
 primero	first	adj
 chica	girl
-primera	first; first class	adj
-veces	times (plural of vez)	noun
 doctor	doctor
 cuenta	bill; account; count
 contar	to count; to tell
-nueva	new (feminine); news	adj
 jefe	boss; chief, head
 señorita	young woman; Miss
 punto	point; dot; full stop
@@ -84,7 +82,6 @@ parar	to stop, to halt
 asesino	murderer, killer; murderous	noun
 real	real; royal	adj
 derecho	right; law; straight
-mala	bad (feminine of malo)	adj
 café	coffee; café; brown	noun
 mía	mine, my	pron
 daño	damage, harm
@@ -120,15 +117,12 @@ navidad	Christmas
 embargo	sin embargo: however; embargo
 acá	here
 director	director; manager; head teacher
-juro	I swear (from jurar)	verb
 cerebro	brain
 tía	aunt; girl, woman
 nervioso	nervous, on edge
 tuya	yours	pron
 oro	gold
 guapo	good-looking, handsome	adj
-vieja	old woman; old (feminine)
-segunda	second (feminine); second gear	adj
 luna	moon
 árbol	tree
 carne	meat; flesh
@@ -149,11 +143,9 @@ ladrón	thief, burglar	noun
 menudo	small, tiny (a menudo: often)
 periódico	newspaper; periodic	noun
 lastimar	to hurt, to injure
-traído	brought
 repente	de repente: suddenly
 escrito	written; piece of writing
 cerdo	pig; pork; dirty	noun
-blanca	white (feminine)	adj
 local	local; premises	adj
 santa	saint (feminine); holy
 damas	ladies; draughts
@@ -168,20 +160,16 @@ disco	disc, record; disco, club
 jurado	jury; sworn	noun
 cabrón	bastard (vulgar); billy goat
 aquellos	those
-clases	classes, lessons
 sujeto	subject; guy, individual; held	noun
 explotar	to explode; to exploit
 fiscal	prosecutor; fiscal	noun
 motor	engine, motor	noun
-roja	red (feminine)	adj
-negra	black (feminine); crotchet	adj
 humor	humour; mood
 tantos	so many	det
 actor	actor
 polvo	dust; powder
 empleado	employee; employed	noun
 mio	mine, my	pron
-ocurrido	happened
 aeropuerto	airport
 móvil	mobile phone; mobile	noun
 tamaño	size	noun
@@ -197,10 +185,8 @@ cura	priest; cure
 milla	mile
 centavo	cent	noun
 rumor	rumour; murmur
-clara	clear (feminine); egg white	adj
 bordo	a bordo: on board
 japonés	Japanese
-comido	eaten
 pescado	fish (as food)
 whisky	whisky	noun
 cuadro	painting, picture; square
@@ -216,7 +202,6 @@ oreja	ear
 guerrero	warrior; warlike	noun
 kilo	kilo
 crisis	crisis
-entrado	entered
 audiencia	audience; hearing; court
 tío	uncle; guy, dude
 colocado	placed; high, stoned
@@ -268,7 +253,6 @@ fusible	fuse	noun
 sable	sabre, cutlass	noun
 germen	germ; seed, origin	noun
 tráiler	trailer (film preview); articulated lorry	noun
-loca	crazy, mad (feminine of loco); madwoman	adj
 niñita	little girl	noun
 fa	fa (musical note)	noun
 chiquito	tiny, very small; little one	adj

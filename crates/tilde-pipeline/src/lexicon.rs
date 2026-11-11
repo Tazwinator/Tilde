@@ -424,10 +424,19 @@ impl Index {
     fn collect_targets(&self, w: &str, depth: u8, out: &mut Vec<String>) {
         let Some(info) = self.info(w) else { return };
         for t in &info.targets {
-            if self.info(t).is_some_and(|i| i.lex_lemma) {
-                out.push(t.clone());
-            } else if depth < 2 {
+            let lemma = self.info(t).is_some_and(|i| i.lex_lemma);
+            // A form listed in inflections.txt is no word of its own, so what
+            // points at it belongs to what it inflects: "robada" → "robado"
+            // → "robar". Otherwise "robado" would live on as a word through
+            // its feminine and plurals.
+            let through = !lemma || prefer_inflection(t);
+            let found = out.len();
+            if through && depth < 2 {
                 self.collect_targets(t, depth + 1, out);
+            }
+            // a listed form that inflects nothing we know stays the word
+            if lemma && (!through || out.len() == found) {
+                out.push(t.clone());
             }
         }
     }
@@ -1081,6 +1090,36 @@ mod tests {
             r#"{"word":"pensar","pos":"verb","lang_code":"es","senses":[{"glosses":["to think"]}]}"#,
         ]);
         assert_eq!(ranked(&idx, &[("pienso", 100)]), ["pensar"]);
+    }
+
+    #[test]
+    fn a_listed_form_is_no_word_for_its_own_forms_either() {
+        // "robado" is in inflections.txt: an adjective in the dictionary, but
+        // nothing more than the participle of robar
+        let idx = index(&[
+            r#"{"word":"robar","pos":"verb","lang_code":"es","senses":[{"glosses":["to steal"]}]}"#,
+            r#"{"word":"robado","pos":"adj","lang_code":"es","senses":[{"glosses":["stolen"]}]}"#,
+            r#"{"word":"robado","pos":"verb","lang_code":"es","senses":[{"glosses":["past participle of robar"],"tags":["form-of","participle","past"],"form_of":[{"word":"robar"}]}]}"#,
+            r#"{"word":"robada","pos":"adj","lang_code":"es","senses":[{"glosses":["feminine singular of robado"],"tags":["feminine","form-of","singular"],"form_of":[{"word":"robado"}]}]}"#,
+            r#"{"word":"robados","pos":"adj","lang_code":"es","senses":[{"glosses":["masculine plural of robado"],"tags":["form-of","masculine","plural"],"form_of":[{"word":"robado"}]}]}"#,
+        ]);
+        // its feminine and plural would otherwise keep "robado" on the list
+        assert_eq!(
+            idx.rank(&freq(&[
+                ("robado", 100),
+                ("robada", 40),
+                ("robados", 30),
+                ("robar", 5)
+            ])),
+            [("robar".to_string(), 175.0)]
+        );
+        // and they are stored as forms of the verb, so a search finds it
+        let wanted: HashSet<String> = ["robar".to_string(), "robado".to_string()].into();
+        let forms = idx.inflections_of(&wanted);
+        let mut of_robar = forms["robar"].clone();
+        of_robar.sort();
+        assert_eq!(of_robar, ["robada", "robado", "robados"]);
+        assert!(!forms.contains_key("robado"));
     }
 
     #[test]
