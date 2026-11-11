@@ -4,8 +4,10 @@
 # ("tenia" for tenía), verbs that exist only on paper ("lindar" would take
 # every "lindo") and single letters. A form listed here counts for nothing
 # and is never a word of its own, so its count can't pass to a homograph
-# either. Nor is it stored as a form of one ("china" under chino), so a search
-# or an example sentence with it finds no word. One form per line.
+# either. Nor is it stored as a form of one ("china" under chino), so an
+# example sentence with it is no example of that word. (A search without
+# accents still finds a word by its accented form: "tenia" finds tener
+# through "tenía".) One form per line.
 
 # names
 bob
@@ -29,6 +31,12 @@ yuri
 tomás
 japón
 parís
+lord
+lady
+milord
+jean
+montano
+tarzán
 
 # English
 to
@@ -77,6 +85,19 @@ jacks
 prime
 royal
 stack
+we
+house
+baby
+hall
+boom
+was
+bay
+scout
+off
+right
+line
+down
+friend
 
 # misspellings, and lemmas that only take a real word's forms
 tenia
@@ -85,6 +106,7 @@ lineas
 record
 lindar
 dolar
+salio
 
 # letters (a, e, o, u and y are words)
 b
@@ -115,3 +137,20 @@ z
 ó
 ú
 ü
+
+# abbreviations, noises and fragments the subtitles are full of ("Ud.",
+# "2pm", "CO2", "ji, ji"), which the dictionary lists as rare words
+na
+bo
+pm
+po
+co
+et
+bi
+fu
+be
+bum
+ud
+ji
+pd
+dea

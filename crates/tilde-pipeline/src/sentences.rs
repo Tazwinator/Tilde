@@ -42,9 +42,12 @@ pub fn load_tatoeba(zip_path: &Path) -> Vec<Pair> {
         .collect()
 }
 
+/// The words of a Spanish sentence, lowercased. Letters that touch a digit
+/// are no word: the "CO" of "CO2", the "e" of the chess square "e5" and the
+/// "pm" of "2pm" would otherwise be examples of "co", "e" and "pm".
 pub fn tokens(s: &str) -> Vec<String> {
-    s.split(|c: char| !c.is_alphabetic())
-        .filter(|t| !t.is_empty())
+    s.split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty() && t.chars().all(char::is_alphabetic))
         .map(str::to_lowercase)
         .collect()
 }
@@ -706,6 +709,16 @@ mod tests {
         assert_eq!(linker.lookup("esta"), [3]);
         assert!(linker.lookup("nada").is_empty());
         assert!(linker.link("nada", &[]).is_empty());
+    }
+
+    #[test]
+    fn letters_that_touch_a_digit_are_no_word() {
+        assert_eq!(
+            tokens("El CO2 y el H₂O, a las 2pm (casilla e5)."),
+            ["el", "y", "el", "a", "las", "casilla"]
+        );
+        // a number standing alone takes no word with it
+        assert_eq!(tokens("Tengo 30 años."), ["tengo", "años"]);
     }
 
     #[test]

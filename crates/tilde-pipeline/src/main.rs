@@ -30,7 +30,8 @@ const ATTRIBUTION: &str = "Word frequencies: FrequencyWords by Hermit Dave \
 Lemmas, glosses, inflections and conjugations: Wiktionary contributors (en.wiktionary.org) \
 via kaikki.org, CC BY-SA 4.0. Spanish definitions: Wikcionario contributors (es.wiktionary.org) \
 via kaikki.org, CC BY-SA 4.0. Example sentences: Tatoeba contributors (tatoeba.org) via OPUS, \
-CC BY 2.0 FR. This word database is shared under CC BY-SA 4.0 \
+CC BY 2.0 FR. Some glosses and definitions were written or reworded for Tilde. \
+This word database is shared under CC BY-SA 4.0 \
 (creativecommons.org/licenses/by-sa/4.0).";
 
 struct Args {

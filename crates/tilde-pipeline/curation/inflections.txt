@@ -43,6 +43,7 @@ cabe
 caí
 cambiado
 cancelado
+cantidades
 ciega
 clara
 clases
@@ -85,6 +86,7 @@ dirigido
 disculpe
 diseñado
 dobla
+dorada
 dormida
 ejecutado
 eléctrica
@@ -183,6 +185,7 @@ partes
 pasa
 patas
 pega
+perras
 perseguido
 pesa
 pica
