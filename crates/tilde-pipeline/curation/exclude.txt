@@ -27,6 +27,8 @@ gene
 newton
 yuri
 tomás
+japón
+parís
 
 # English
 to

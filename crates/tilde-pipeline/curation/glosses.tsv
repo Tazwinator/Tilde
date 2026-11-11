@@ -18,7 +18,7 @@ un	a, an
 una	a, an; one	article
 yo	I
 usted	you (formal)
-ustedes	you (plural)
+ustedes	you (formal plural)
 su	his, her, its, their, your
 sus	his, her, its, their, your
 esto	this
@@ -69,7 +69,7 @@ punto	point; dot; full stop
 realidad	reality
 coche	car
 número	number
-auto	car; court order
+auto	car (mainly Latin America); court ruling
 clase	class; lesson; kind, sort
 teléfono	telephone, phone
 escuela	school
@@ -92,9 +92,9 @@ control	control; check, checkpoint
 frente	forehead; front
 caja	box, case; checkout, till
 ley	law
-acercar	to bring closer; to come closer
+acercar	to bring closer; to approach (acercarse)
 cámara	camera; chamber
-sino	but, rather; fate	conj
+sino	but, rather; except	conj
 enfermo	sick, ill; patient
 alrededor	around; surroundings	adv
 estrella	star
@@ -108,8 +108,8 @@ entendido	understood; expert
 enterar	to find out (enterarse); to inform
 enemigo	enemy; hostile	noun
 carajo	hell, damn (vulgar)
-dejado	left (behind); sloppy
-trasero	back, rear; backside
+dejado	sloppy, careless; left (behind)
+trasero	back, rear; (noun) bottom, backside
 ataque	attack; fit, seizure
 don	gift, talent; Mr (title)
 callar	to be quiet, to keep silent
@@ -144,8 +144,8 @@ menudo	small, tiny (a menudo: often)
 periódico	newspaper; periodic	noun
 lastimar	to hurt, to injure
 repente	de repente: suddenly
-escrito	written; piece of writing
-cerdo	pig; pork; dirty	noun
+escrito	written; in writing
+cerdo	pig; pork; slob	noun
 local	local; premises	adj
 santa	saint (feminine); holy
 damas	ladies; draughts
@@ -180,7 +180,7 @@ anciano	old man; elderly	noun
 ganador	winner; winning	noun
 trabajador	worker; hard-working	noun
 ignorar	to ignore; to not know
-mundial	world, worldwide; World Cup
+mundial	world, worldwide, global
 cura	priest; cure
 milla	mile
 centavo	cent	noun
@@ -266,3 +266,450 @@ capullo	cocoon; bud; jerk, idiot (vulgar)	noun
 pendejo	asshole, idiot (vulgar)	noun
 hostia	host (communion wafer); bloody hell! (vulgar)	noun
 verga	cock, dick (vulgar); yard (of a sail)	noun
+
+# From the review of the 3,000 commonest words: the Wiktionary gloss was
+# wrong, led with a rare or non-Peninsular sense, or missed the everyday
+# meaning ("mañana" without "morning", "actual" as "actual").
+hacer	to do; to make
+para	for, to; in order to; by (a time)
+querer	to want; to love; to be willing to
+deber	must; should; to owe
+ya	already; now; anymore
+vez	time, occasion; turn
+dejar	to leave; to let, allow; to stop
+porque	because; so that
+llamar	to call; to phone; to knock
+casa	house; home
+tiempo	time; weather; tense
+encontrar	to find; to come across; to meet
+quedar	to stay; to be left; to arrange to meet
+poner	to put, to place; to turn on; to set
+seguir	to follow; to continue; to keep on (doing)
+antes	before; earlier; beforehand
+sentar	to seat; to sit down (sentarse); to suit
+entender	to understand; to know about; to get on
+momento	moment, instant; time, period
+trabajar	to work; to work on
+mañana	tomorrow; morning; in the future
+tratar	to treat; to try (tratar de); to deal with
+nuestro	our; ours	det
+hoy	today; nowadays
+conseguir	to get, to obtain; to achieve; to manage to
+conmigo	with me; with myself	pron
+último	last; latest; final
+muerto	dead; exhausted; lifeless
+razón	reason; right (tener razón); reasoning
+tarde	late; afternoon, evening
+contigo	with you; with yourself	pron
+cierto	true; certain; a certain
+sacar	to take out; to get out; to pull out
+forma	shape, form; way
+maldito	damned; cursed
+ganar	to earn; to win; to gain
+pagar	to pay; to pay for; to pay off
+cariño	affection, fondness; darling, love; caress
+significar	to mean; to signify
+genial	great, brilliant; of genius
+mientras	while; meanwhile	conj
+supuesto	supposed, alleged (por supuesto: of course)
+importante	important; significant; considerable
+pronto	soon; early; quickly	adv
+siquiera	even (ni siquiera: not even); at least
+bajo	short; low; quiet (voice)
+juego	game; play; set
+fin	end; purpose, aim; (fin de semana: weekend)
+nuestros	our; ours	det
+bastante	enough; quite, fairly; plenty of
+coger	to take, to grab; to catch; to pick up
+incluso	even; including	adv
+encantar	to love, to really like; to delight; to enchant
+muchacho	boy, lad; young man
+probar	to try, to taste; to test; to prove
+negro	black	adj
+comida	food; lunch; meal
+próximo	next; near; upcoming
+confiar	to trust; to entrust; to confide
+prueba	proof; test; trial
+raro	strange, odd, weird; rare
+película	film, movie; thin layer, film
+niña	girl; little girl; pupil (of the eye)
+sueño	dream; sleep; sleepiness
+oficina	office
+descubrir	to discover; to reveal; to uncover
+tirar	to throw; to throw away; to pull
+rey	king
+carta	letter; menu; playing card
+referir	to refer to (referirse a); to tell, to relate
+caballero	gentleman; sir; knight
+falta	lack, shortage; absence; foul
+viaje	trip, journey; voyage
+ropa	clothes, clothing
+afuera	outside, out
+cuarto	fourth; quarter; room
+asesinato	murder; assassination; homicide
+lograr	to achieve; to manage to; to obtain
+preferir	to prefer; would rather
+pena	pity, shame; sorrow; punishment, sentence
+dolor	pain, ache; grief, sorrow
+profesor	teacher; professor
+llave	key; spanner, wrench; switch
+tienda	shop, store; tent
+accidente	accident; mishap; terrain feature
+cargo	position, post; charge, responsibility; debit
+salvo	except, apart from; (a salvo) safe	prep
+centro	centre; middle; city centre
+guardar	to put away, to keep; to save
+principio	beginning, start; principle; origin
+terrible	terrible, awful, horrible
+revisar	to check; to review; to revise
+calmar	to calm; to calm down (calmarse); to soothe
+acordar	to agree; to remember (acordarse de); to decide
+abuela	grandmother
+maestro	teacher; master; craftsman
+suelo	ground, floor; soil
+alejar	to move away; to keep away; to estrange
+disculpa	apology; excuse
+cenar	to have dinner, to have supper
+triste	sad; gloomy, dismal; sorrowful
+piso	flat, apartment; floor, storey
+guardia	guard; police officer; guard duty
+matrimonio	marriage; married couple; matrimony
+precioso	beautiful, lovely; precious
+baja	drop, fall; sick leave; casualty
+largar	to throw out; to clear off (largarse); to let go
+pista	track, trail; clue, hint; court, runway
+dedo	finger; toe
+descansar	to rest; to relax; to sleep
+partido	match, game; political party	noun
+saltar	to jump; to skip; to go off, to blow
+cumplir	to fulfil, to keep (a promise); to turn (an age)
+bomba	bomb; pump
+ninguno	no, not any; none, no one
+aun	even; even though (aun así)
+enamorado	in love; infatuated
+acostar	to put to bed; to go to bed (acostarse)
+invitado	invited; (noun) guest
+encantado	delighted, pleased; enchanted, charmed
+juicio	judgement; trial; opinion
+aguantar	to put up with, to bear, to stand; to hold
+roto	broken; torn
+pegar	to stick, to glue; to hit; to go with, to match
+objetivo	objective, impartial; (noun) aim, goal, target
+notar	to notice; to feel; to note
+norte	north	noun
+valor	value, worth; courage
+ése	that one
+gato	cat; tomcat; jack
+acabado	finished; worn-out; over
+nena	little girl; babe, dear
+respecto	regard, relation (respecto a: with regard to)
+contratar	to hire, to take on; to contract
+apagar	to turn off, to switch off; to put out
+ordenar	to tidy, to arrange; to order; to sort
+detalle	detail; nice gesture, thoughtful touch
+asiento	seat; place; entry (in accounts)
+estado	state, condition; status; nation
+ojalá	I hope; I wish; if only	intj
+definitivamente	for good, permanently; definitively; definitely
+acaso	perhaps, maybe; by any chance
+red	net; network; mesh
+quieto	still, motionless; calm
+montar	to ride; to get on; to set up, to assemble
+condición	condition; state; nature, character
+ganado	livestock, cattle	noun
+librar	to free; to get out of; to have the day off
+vacación	holiday, vacation
+tiro	shot; throw; range
+distinto	different; distinct
+defender	to defend, to protect; to stand up for
+rendir	to surrender (rendirse); to yield; to exhaust
+cabo	end, tip; cape; corporal
+extrañar	to surprise, to seem strange; to miss
+bola	ball; scoop; fib, lie
+apuntar	to aim, to point; to note down; to sign up
+corto	short; dim-witted, slow; shy
+quiénes	who (plural); whom
+agujero	hole; gap, deficit
+playa	beach; seaside
+cinta	ribbon; tape; strip
+pecho	chest; breast
+pasada	pass, once-over; something amazing
+truco	trick; knack
+parque	park; playpen
+encender	to light; to turn on, to switch on
+inventar	to invent; to make up
+puente	bridge; long weekend
+seguramente	probably; surely
+papi	daddy, dad
+arriesgar	to risk; to endanger; to venture
+sombrero	hat
+jardín	garden
+sabio	wise; learned
+mentiroso	lying, deceitful; liar
+paga	pay, wages; pocket money; payment
+bruja	witch, sorceress; hag
+mono	monkey; overalls; cute
+artículo	article; item, product
+animar	to encourage; to cheer up; to liven up
+computadora	computer (Latin America; in Spain: ordenador)
+reportar	to bring, to yield; to report
+acceso	access; entrance, way in
+escenario	stage; setting, scene; scenario
+campamento	camp; campsite
+helado	ice cream; frozen, icy	noun
+arrancar	to pull out, tear out; to start
+colocar	to place; to put; to find a job for
+lástima	pity; shame
+piloto	pilot; driver; pilot light
+discurso	speech; discourse
+oso	bear
+zorro	fox; sly person
+resistir	to resist; to withstand; to put up with
+efectivo	effective; real, actual
+paquete	parcel, package; packet; useless person
+personaje	character; personage, public figure
+rodear	to surround; to go around; to round up
+tercera	third gear; third
+pillar	to catch; to get, to grab; to run over
+curso	course, class; school year; flow, route
+instituto	secondary school, high school; institute
+cheque	cheque; check
+funeral	funeral	noun
+lío	mess, muddle; trouble, hassle; bundle
+corriente	ordinary, common; current; running
+parado	stopped, still; unemployed; idle
+bolso	handbag; bag
+camioneta	van, small truck; pick-up truck
+pata	leg, paw; leg (of furniture); female duck
+producto	product, item; produce; proceeds
+fortuna	fortune, wealth; luck; fate
+ciudadano	citizen; city dweller	noun
+aparte	apart, aside; separately; besides	adv
+suicidar	to commit suicide
+billete	banknote, note; ticket
+bravo	brave; fierce, wild; rough (sea)
+campaña	campaign; drive; countryside
+cola	tail; queue, line; glue
+grito	shout, cry; scream
+desgracia	misfortune, bad luck; disgrace
+comportar	to behave (comportarse); to involve, to entail
+hoja	leaf; sheet (of paper); blade
+patrón	boss; patron saint; pattern
+caro	expensive; dear
+ruta	route; path
+desierto	desert; wilderness	noun
+medida	measurement; measure, step; extent
+marcar	to mark; to dial; to score
+despacho	office; study; dispatch
+serpiente	snake, serpent
+impedir	to prevent; to impede, hinder
+impuesto	tax, levy; duty
+cristal	glass; window pane; crystal
+traidor	traitor; treacherous	noun
+título	title; degree; qualification
+acostumbrar	to accustom; to be in the habit of
+conferencia	lecture, talk; conference; long-distance call
+mortal	deadly, fatal; mortal
+consigo	with himself, herself, itself; with themselves	pron
+preocupación	worry, concern; anxiety; preoccupation
+hundir	to sink; to ruin, to destroy; to collapse
+ejercicio	exercise; practice; financial year
+burlar	to outwit; to make fun of (burlarse)
+actitud	attitude; stance; posture
+cruz	cross; burden; tails
+terreno	land, ground; plot of land; terrain	noun
+pasión	passion; enthusiasm; the Passion (of Christ)
+plantar	to plant; to stand up (a date); to put, to place
+arder	to burn, to blaze; to sting, to smart; to seethe
+emocionante	exciting, thrilling; moving, touching
+recurso	resource, means; appeal
+reserva	reservation, booking; reserve; nature reserve
+competencia	competition; competence; jurisdiction
+espacial	space; spatial
+aclarar	to clarify, to explain; to rinse; to clear up
+ensayo	essay; rehearsal; test, trial
+coma	comma; coma
+ronda	round; patrol; ring road
+jo	gosh, jeez; darn
+barra	bar, rod; counter (in a bar); loaf, baguette
+plano	flat, level; plane
+jueves	Thursday
+medianoche	midnight
+ambiente	atmosphere; environment; mood
+aprobar	to approve; to pass (an exam); to permit
+vuestros	your (plural, informal); yours
+cristo	Christ; crucifix; mess, fuss
+acostumbrado	used to, accustomed; customary
+meta	goal, aim; finish line
+portar	to carry, to bear; to behave (portarse)
+normar	to regulate; to set rules for
+ayudante	assistant; helper	noun
+bicicleta	bicycle, bike
+nombrar	to name; to appoint; to mention
+pasta	pasta; paste, dough; money (slang)
+fabuloso	fabulous, great; mythical
+pánico	panic	noun
+cazador	hunter	noun
+cortado	cut; shy, embarrassed; choppy
+guau	wow; woof
+payaso	clown	noun
+nuevamente	again, once more
+arreglado	fixed, sorted; tidy; dressed up
+cuán	how
+pasajero	passenger; transient	noun
+aprecio	esteem, regard; appreciation
+tender	to tend to; to hang out (washing); to hold out
+solar	plot, building site; ancestral home
+herramienta	tool, implement
+concurso	competition, contest; game show; tender
+cumplido	compliment; courtesy, formality	noun
+almorzar	to have lunch; to have a mid-morning snack
+ola	wave; surge, spate
+batería	battery; drums, drum kit; set, series
+pariente	relative, relation
+boleto	lottery ticket, betting slip; ticket
+onda	wave; wavelength; vibe
+dispositivo	device, gadget; (police, security) operation	noun
+apellido	surname, last name
+cartera	wallet; school bag, briefcase; portfolio
+lidiar	to deal with, cope with; to fight (a bull)
+igualmente	equally; likewise; same to you
+actual	current, present; topical
+niñera	nanny; babysitter
+figura	figure; shape; important person, star
+vuestras	your (plural, informal); yours
+ánimo	mood, spirits; courage; cheer up!
+tarta	cake; tart, pie
+partida	game, match; departure; item, entry
+cantante	singer	noun
+enfermar	to fall ill, get sick; to make ill
+tocado	touched, a bit crazy; injured; bruised (fruit)
+acceder	to access; to agree, to consent
+propietario	owner	noun
+ud	you (formal)
+excelencia	excellence; excellency
+rollo	roll; bore, drag; thing, affair
+mago	magician; wizard	noun
+horario	schedule, timetable; opening hours	noun
+policial	police; detective (novel, film)
+reto	challenge; dare
+exigir	to demand; to require; to exact
+corredor	runner; broker; corridor
+antecedente	precedent; background; criminal record	noun
+añadir	to add; to append
+reparar	to repair, to fix; to notice
+oculto	hidden, concealed; secret; occult
+bombero	firefighter
+ilusión	hope, excitement; illusion
+infantil	children's; childish; infantile
+vaquero	cowboy; jeans	noun
+pandilla	group of friends; gang
+gota	drop; tiny amount; gout
+demandar	to sue; to demand, to request
+publicidad	advertising; publicity; advertisements
+oración	prayer; sentence; clause
+hechizo	spell, charm; enchantment	noun
+fatal	terrible, awful; fatal
+debilidad	weakness; soft spot
+super	very, mega	adv
+piedad	mercy, pity; compassion; piety
+heroína	heroine; heroin
+muelle	spring; dock, quay, pier	noun
+productor	producer	noun
+rogar	to beg, to plead; to pray
+plástico	plastic	noun
+caramelo	sweet, candy; caramel
+juzgado	court, courthouse
+anotar	to write down, note; to score; to annotate
+americana	jacket, blazer; American woman
+novato	inexperienced, new; novice, rookie
+pato	duck; clumsy person
+sueldo	salary, wage, pay
+romano	Roman
+verdaderamente	really, truly
+as	ace; star, hotshot
+fracaso	failure, flop; downfall, ruin
+acudir	to go, to come; to attend; to turn to
+significado	meaning; significance	noun
+ensalada	salad; jumble, mix-up
+esforzar	to strive, to make an effort; to strain
+desayunar	to have breakfast; to have for breakfast
+coraje	courage, bravery; anger, rage
+leal	loyal, faithful
+simpático	nice, friendly, likable
+comisión	committee; commission; errand, assignment
+denunciar	to report (to the police); to denounce
+falla	fault (in rock); flaw, defect; Fallas figure
+investigador	researcher; investigator	noun
+dominar	to dominate, to control; to master
+sentencia	sentence, ruling, judgment; maxim
+giro	turn, spin; change of direction; money order
+jugo	juice (of meat, plants); substance, essence
+comprometer	to commit; to compromise, to jeopardize
+enterado	informed, aware; know-it-all	adj
+columna	column; spine; file
+etapa	stage, phase; leg (of a race or journey)
+plazo	period, time limit; deadline; instalment
+aparato	device, appliance, machine; braces
+levantado	raised, lifted; up, out of bed
+romance	romance, love affair; ballad
+señalar	to point out, to indicate; to mark; to signal
+escolar	school, scholastic; schoolchild
+olvido	forgetting; oversight, lapse; oblivion
+conjunto	set, group; outfit; band	noun
+colonia	colony; cologne
+delincuente	delinquent; criminal	noun
+agotado	exhausted, worn out; sold out
+músico	musician	noun
+agenda	diary, planner; agenda; schedule
+fianza	deposit; bail; surety
+sufrido	long-suffering, patient; hard-wearing
+solicitud	application; request
+distraer	to distract; to entertain, amuse
+medias	tights, stockings; long socks
+función	function; performance, show; role
+sello	stamp, rubber stamp; postage stamp; seal
+letras	humanities, arts; letters; lyrics
+católico	Catholic; universal
+éstas	these, these ones
+escala	scale; stopover; ladder
+sector	sector; area, zone; section
+pegado	stuck, glued; very close
+saludable	healthy, wholesome
+bárbaro	barbaric, cruel; barbarian; amazing, tremendous
+champán	champagne
+marinero	sailor, seaman	noun
+músculo	muscle
+casco	helmet; hull; empty bottle
+potencia	power, strength; world power
+tirador	shooter, marksman; handle, knob; slingshot
+traficante	dealer, trafficker	noun
+individuo	individual, person; guy	noun
+retrasado	late, delayed; behind
+presa	dam; prey; piece of meat
+presupuesto	budget; estimate, quote	noun
+villa	town; villa
+reservado	reserved; discreet; booked
+educado	polite, well-mannered; educated
+cajón	drawer; large box, crate
+suyos	his, hers; theirs; yours (formal)
+lana	wool
+emborrachar	to get drunk; to make drunk; to soak
+vago	lazy, idle; vague
+desmayar	to faint, pass out; to lose heart
+convenir	to suit, be advisable; to agree, agree on
+vagabundo	tramp; vagrant; homeless person	noun
+afecto	affection; fondness	noun
+interrogatorio	interrogation; questioning
+cómplice	accomplice; partner in crime	noun
+exposición	exhibition; exposure; presentation
+perrito	doggy, little dog; puppy; hot dog
+cohete	rocket; skyrocket
+emitir	to emit, give off; to broadcast; to issue
+fastidiar	to annoy, bother; to ruin, spoil
+ver	to see; to watch; to look, to seem (verse)
+sentir	to feel; to be sorry, to regret; to hear
+agarrar	to grab, to take hold of; to hold on; to catch
+llenar	to fill, to fill up
+libra	pound; Libra
+grasa	fat; grease

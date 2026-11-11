@@ -129,6 +129,7 @@ investigado
 joyas
 juro
 justa
+lamento
 lastimado
 leído
 liberado
@@ -181,6 +182,7 @@ pare
 partes
 pasa
 patas
+pega
 perseguido
 pesa
 pica
