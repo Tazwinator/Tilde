@@ -58,6 +58,11 @@ const MIGRATIONS: &[&str] = &[
        word_id INTEGER NOT NULL,
        PRIMARY KEY(mined_id, word_id)
      );",
+    // "Termina tu primera sesión" used to be given by the placement quiz. A
+    // player who did only that holds it without having played: take it back,
+    // so that their first session awards it, and says so.
+    "DELETE FROM badges WHERE id = 'first-session'
+       AND NOT EXISTS (SELECT 1 FROM events WHERE kind IN ('session', 'sidecar'));",
 ];
 
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
@@ -351,6 +356,57 @@ mod tests {
         assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
         let state: i64 = conn.query_row("SELECT state FROM cards WHERE word_id = 42", [], |r| r.get(0)).unwrap();
         assert_eq!(state, 2);
+    }
+
+    /// A database as an earlier Tilde left it, with `setup` run on it. The
+    /// schema was the first one all along, but the earliest builds didn't
+    /// number it: their files say version 0, the later ones 1.
+    fn old_db(name: &str, version: i64, setup: &str) -> std::path::PathBuf {
+        let path = temp_db(name);
+        let old = Connection::open(&path).unwrap();
+        old.execute_batch(MIGRATIONS[0]).unwrap();
+        if version > 0 {
+            old.pragma_update(None, "user_version", version).unwrap();
+        }
+        old.execute_batch(setup).unwrap();
+        assert_eq!(schema_version(&old).unwrap(), version);
+        path
+    }
+
+    #[test]
+    fn a_placement_only_first_session_badge_is_dropped_on_upgrade() {
+        let badges = |path: &std::path::Path| -> Vec<String> {
+            let conn = open(path).unwrap();
+            assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+            conn.prepare("SELECT id FROM badges ORDER BY id")
+                .and_then(|mut stmt| stmt.query_map([], |r| r.get(0))?.collect())
+                .unwrap()
+        };
+        let held = "INSERT INTO badges(id, earned_at) VALUES ('first-session', 100), ('first-mined', 200);";
+        // from a file that was never numbered, and from one that was
+        for version in [0, 1] {
+            // placement and nothing else: no session was ever played
+            let unearned = old_db(&format!("badge_unearned_v{version}"), version, &format!(
+                "{held} INSERT INTO settings(key, value) VALUES ('placement', '{{}}');
+                 INSERT INTO cards(word_id, stability, state) VALUES (1, 120, 2);"
+            ));
+            assert_eq!(badges(&unearned), ["first-mined"], "from version {version}");
+            let conn = open(&unearned).unwrap();
+            let kept: (i64, i64) = conn
+                .query_row("SELECT (SELECT COUNT(*) FROM cards), (SELECT COUNT(*) FROM settings)", [], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap();
+            assert_eq!(kept, (1, 1), "the upgrade from version {version} touched more than the badge");
+
+            for kind in ["session", "sidecar"] {
+                let earned = old_db(&format!("badge_{kind}_v{version}"), version, &format!(
+                    "{held} INSERT INTO events(ts, kind, xp) VALUES (50, '{kind}', 10);"
+                ));
+                assert_eq!(badges(&earned), ["first-mined", "first-session"], "{kind}, from version {version}");
+                // and its date is the one it had
+                let at: i64 = open(&earned).unwrap().query_row("SELECT earned_at FROM badges WHERE id = 'first-session'", [], |r| r.get(0)).unwrap();
+                assert_eq!(at, 100);
+            }
+        }
     }
 
     #[test]

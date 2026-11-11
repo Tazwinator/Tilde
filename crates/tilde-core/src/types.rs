@@ -178,6 +178,7 @@ pub struct RoundResult {
     pub correct: bool,
     pub duration_ms: i64,
     /// For ReviewCard rounds: FSRS grade 1=Again 2=Hard 3=Good 4=Easy.
+    /// For NewWord rounds: 4 says the player knows the word already.
     #[serde(default)]
     pub quality: Option<i32>,
     /// For Match rounds: the pairs the player got wrong at least once. The

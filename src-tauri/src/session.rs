@@ -23,16 +23,32 @@ pub fn to_hit(w: &WordCard, known: bool) -> tilde_core::types::WordHit {
     }
 }
 
+/// The most one round adds to the time played. Long enough for a slow
+/// dictation; short enough that a window left open on a round adds two
+/// minutes, not the hour it sat there.
+pub const ROUND_MS_CAP: i64 = 120_000;
+
+/// A session nobody has answered for this long was abandoned (the window was
+/// closed on it, the page reloaded) and is dropped when the next one starts.
+/// Counted from the last answer, not the start, so a long session still
+/// being played is never taken for one.
+pub const STALE_S: f64 = 6.0 * 3600.0;
+
 pub struct Session {
     pub kind: SessionKind,
     pub rounds: Vec<Round>,
     pub round_types: Vec<&'static str>,
-    pub results: Vec<(bool, i32)>, // (correct, quality)
     pub combo: i32,
     pub best_combo: i32,
     pub xp: i64,
     pub new_words: Vec<String>,
-    pub started_at: f64,
+    /// Time spent on the rounds answered so far: the session's length. The
+    /// rounds report it, so time away from the window is not play.
+    pub active_ms: i64,
+    /// When the session started or a round of it was last answered.
+    pub last_active: f64,
+    /// Answers given and how many were right. An intro card is shown, not
+    /// answered, and counts in neither.
     pub correct: i64,
     pub total_graded: i64,
     /// This session's row in `events`, created on the first answer.
@@ -49,9 +65,9 @@ pub struct SessionMark {
     combo: i32,
     best_combo: i32,
     xp: i64,
+    active_ms: i64,
     correct: i64,
     total_graded: i64,
-    results: usize,
     new_words: usize,
     event_id: Option<i64>,
 }
@@ -62,9 +78,9 @@ impl Session {
             combo: self.combo,
             best_combo: self.best_combo,
             xp: self.xp,
+            active_ms: self.active_ms,
             correct: self.correct,
             total_graded: self.total_graded,
-            results: self.results.len(),
             new_words: self.new_words.len(),
             event_id: self.event_id,
         }
@@ -74,9 +90,9 @@ impl Session {
         self.combo = mark.combo;
         self.best_combo = mark.best_combo;
         self.xp = mark.xp;
+        self.active_ms = mark.active_ms;
         self.correct = mark.correct;
         self.total_graded = mark.total_graded;
-        self.results.truncate(mark.results);
         self.new_words.truncate(mark.new_words);
         self.event_id = mark.event_id;
     }
@@ -92,12 +108,33 @@ pub fn round_count(kind: SessionKind) -> usize {
     }
 }
 
-/// How many new words a session of this kind introduces (with an intro card).
-pub fn new_word_count(kind: SessionKind) -> usize {
+/// How many new words a session of this kind introduces (with an intro card)
+/// when the player has enough words in the deck to fill its games.
+fn new_word_count(kind: SessionKind) -> usize {
     match kind {
         SessionKind::ReviewOnly | SessionKind::Sidecar => 0,
         _ => (round_count(kind) / 5).max(2),
     }
+}
+
+/// What a mixed session of this kind aims for: (rounds, review cards, new
+/// words, games).
+fn shape(kind: SessionKind) -> (usize, usize, usize, usize) {
+    let n = round_count(kind);
+    let n_review = if kind == SessionKind::Quick { n / 3 } else { n * 2 / 5 };
+    let n_new = new_word_count(kind);
+    (n, n_review, n_new, n - n_review - n_new)
+}
+
+/// How many new words a session of this kind introduces for a player with
+/// `learning` words in the deck. Games only ever quiz words the player has
+/// met, so while the deck can't fill them the session introduces more words
+/// instead, at most twice the usual number, and is otherwise a little
+/// shorter. Home shows this number, so it and `gen_mixed` must both get it
+/// from here.
+pub fn planned_new_words(kind: SessionKind, learning: usize) -> usize {
+    let (_, _, n_new, n_games) = shape(kind);
+    n_new + n_new.min(n_games.saturating_sub(n_new + learning))
 }
 
 fn shuffle<T>(mut v: Vec<T>) -> Vec<T> {
@@ -142,8 +179,8 @@ struct GenCtx<'a> {
     user: &'a Connection,
     tts: &'a Tts,
     definition_lang: String,
-    frontier: i64,
     used_sentences: &'a mut HashSet<i64>,
+    /// Words this session meets for the first time (it has their intro card).
     introduced: &'a mut HashSet<i64>,
     to_speak: std::cell::RefCell<Vec<String>>,
 }
@@ -174,7 +211,6 @@ pub fn generate(
     user: &Connection,
     tts: &Tts,
     definition_lang: &str,
-    frontier: i64,
 ) -> Generated {
     let n = round_count(kind);
     let mut used_sentences = HashSet::new();
@@ -184,7 +220,6 @@ pub fn generate(
         user,
         tts,
         definition_lang: definition_lang.to_string(),
-        frontier,
         used_sentences: &mut used_sentences,
         introduced: &mut introduced,
         to_speak: Default::default(),
@@ -193,7 +228,7 @@ pub fn generate(
     let (rounds, round_types) = match kind {
         SessionKind::Sidecar => gen_sidecar(&mut ctx, n),
         SessionKind::ReviewOnly => gen_reviews(&mut ctx, n),
-        _ => gen_mixed(&mut ctx, kind, n),
+        _ => gen_mixed(&mut ctx, kind),
     };
     // Generation order isn't play order (gen_mixed shuffles), so queue the
     // texts in the order the rounds will be played, each once.
@@ -226,10 +261,10 @@ fn spoken_texts(round: &Round) -> Vec<String> {
 }
 
 fn gen_reviews(ctx: &mut GenCtx, n: usize) -> (Vec<Round>, Vec<&'static str>) {
-    let due = deck::due_card_ids(ctx.user, n as i64);
+    let due = deck::due_card_ids(ctx.user, ctx.content.word_ids(), n);
     let mut rounds = Vec::new();
     let mut types = Vec::new();
-    for (i, wid) in due.into_iter().take(n).enumerate() {
+    for (i, wid) in due.into_iter().enumerate() {
         if let Some(w) = ctx.content.word(wid) {
             let sentences = ctx.content.sentences_for_word(wid, 1);
             rounds.push(Round::ReviewCard {
@@ -248,11 +283,12 @@ fn gen_reviews(ctx: &mut GenCtx, n: usize) -> (Vec<Round>, Vec<&'static str>) {
 }
 
 fn gen_sidecar(ctx: &mut GenCtx, n: usize) -> (Vec<Round>, Vec<&'static str>) {
-    let due = deck::due_card_ids(ctx.user, n as i64);
-    let learning = deck::learning_card_ids(ctx.user, (n * 2) as i64);
-    let new = ctx
-        .content
-        .new_candidates(ctx.frontier, n / 2, &deck::card_ids(ctx.user));
+    // Only words the player has met. There are no intro cards here, with a
+    // film on, and a quiz on a word never shown is a guess. With no cards
+    // yet there are no rounds, and the page says to play a session first.
+    let live = ctx.content.word_ids();
+    let due = deck::due_card_ids(ctx.user, live, n);
+    let learning = deck::learning_card_ids(ctx.user, live, n * 2);
 
     // due cards are also learning cards; each word once
     let mut seen = HashSet::new();
@@ -264,12 +300,19 @@ fn gen_sidecar(ctx: &mut GenCtx, n: usize) -> (Vec<Round>, Vec<&'static str>) {
             }
         }
     }
-    words.extend(new);
     let words = pick(&words, n);
 
     let mut rounds = Vec::new();
     let mut types = Vec::new();
     for (i, w) in words.iter().enumerate() {
+        let id = i as i64;
+        if i % 3 == 1 {
+            if let Some((round, ty)) = dictation_round(ctx, id, w) {
+                rounds.push(round);
+                types.push(ty);
+                continue;
+            }
+        }
         let gloss = gloss_of(w, &ctx.definition_lang);
         let distractors = ctx.content.similar_words(w, 8);
         let mut options = vec![gloss.clone()];
@@ -278,10 +321,10 @@ fn gen_sidecar(ctx: &mut GenCtx, n: usize) -> (Vec<Round>, Vec<&'static str>) {
         }
         let opts = shuffle(options);
         let answer_index = opts.iter().position(|o| *o == gloss).unwrap_or(0) as i32;
-        if i % 3 == 2 {
-            // sentence dictation (easier variant: word with options)
+        // a round that shows no word needs a voice to say it
+        if i % 3 == 2 && ctx.tts.available() {
             rounds.push(Round::Listen {
-                id: i as i64,
+                id,
                 word_id: w.word_id,
                 es: w.lemma.clone(),
                 audio_base64: ctx.audio(&w.lemma),
@@ -289,36 +332,9 @@ fn gen_sidecar(ctx: &mut GenCtx, n: usize) -> (Vec<Round>, Vec<&'static str>) {
                 answer_index,
             });
             types.push("listen");
-        } else if i % 3 == 1 {
-            let sentences = ctx.content.sentences_for_word(w.word_id, 3);
-            let sent = sentences
-                .iter()
-                .find(|(sid, _, _)| !ctx.used_sentences.contains(sid));
-            if let Some((sid, es, _)) = sent {
-                ctx.used_sentences.insert(*sid);
-                rounds.push(Round::ListenType {
-                    id: i as i64,
-                    word_id: w.word_id,
-                    sentence_es: es.clone(),
-                    audio_base64: ctx.audio(es),
-                    answer: es.clone(),
-                });
-                types.push("listen_type");
-                continue;
-            }
-            rounds.push(Round::Choice {
-                id: i as i64,
-                word_id: w.word_id,
-                prompt: w.lemma.clone(),
-                prompt_lang: "es".into(),
-                options: opts,
-                answer_index,
-                audio_base64: ctx.audio(&w.lemma),
-            });
-            types.push("choice");
         } else {
             rounds.push(Round::Choice {
-                id: i as i64,
+                id,
                 word_id: w.word_id,
                 prompt: w.lemma.clone(),
                 prompt_lang: "es".into(),
@@ -332,16 +348,21 @@ fn gen_sidecar(ctx: &mut GenCtx, n: usize) -> (Vec<Round>, Vec<&'static str>) {
     (rounds, types)
 }
 
-fn gen_mixed(ctx: &mut GenCtx, kind: SessionKind, n: usize) -> (Vec<Round>, Vec<&'static str>) {
-    let n_review = if kind == SessionKind::Quick { n / 3 } else { n * 2 / 5 };
-    let n_new = new_word_count(kind);
-    let n_games = n - n_review - n_new;
+fn gen_mixed(ctx: &mut GenCtx, kind: SessionKind) -> (Vec<Round>, Vec<&'static str>) {
+    let (n, n_review, _, n_games) = shape(kind);
+    let live = ctx.content.word_ids();
 
     // gather pools
-    let due = deck::due_card_ids(ctx.user, n_review as i64);
-    let learning = deck::learning_card_ids(ctx.user, (n * 2) as i64);
+    let due = deck::due_card_ids(ctx.user, live, n_review);
+    // words to play games with: the ones in the deck
+    let learn_words: Vec<WordCard> = deck::learning_card_ids(ctx.user, live, n * 2)
+        .iter()
+        .filter_map(|id| ctx.content.word(*id))
+        .collect();
     let carded = deck::card_ids(ctx.user);
-    let new_words = ctx.content.new_candidates(ctx.frontier, n_new, &carded);
+    let new_words = ctx
+        .content
+        .new_candidates(planned_new_words(kind, learn_words.len()), &carded);
 
     let mut rounds: Vec<Round> = Vec::new();
     let mut types: Vec<&'static str> = Vec::new();
@@ -351,8 +372,9 @@ fn gen_mixed(ctx: &mut GenCtx, kind: SessionKind, n: usize) -> (Vec<Round>, Vec<
     let mut intro_ids: HashSet<i64> = HashSet::new();
     let mut game_words: Vec<WordCard> = Vec::new();
 
-    // new word blocks: intro + 2 games. The card is created when the intro
-    // is answered, so an abandoned session leaves no half-seen words behind.
+    // new word blocks: intro + a first quiz. The card is created when the
+    // intro is answered, so an abandoned session leaves no half-seen words
+    // behind.
     for w in &new_words {
         if intro_ids.insert(w.word_id) {
             let sentences = ctx.content.sentences_for_word(w.word_id, 1);
@@ -376,22 +398,10 @@ fn gen_mixed(ctx: &mut GenCtx, kind: SessionKind, n: usize) -> (Vec<Round>, Vec<
         }
     }
 
-    // learning games from knownish words
-    let mut learn_words: Vec<WordCard> = learning
-        .iter()
-        .filter_map(|id| ctx.content.word(*id))
-        .collect();
-    if learn_words.len() < n_games {
-        let extra: Vec<WordCard> = ctx
-            .content
-            .words_by_rank(ctx.frontier, (n_games as i64) * 2)
-            .into_iter()
-            .filter(|w| !carded.contains(&w.word_id) && !game_words.iter().any(|g| g.word_id == w.word_id))
-            .take(n_games - learn_words.len())
-            .collect();
-        learn_words.extend(extra);
-    }
-
+    // Games are played with the words just introduced and the ones in the
+    // deck, and no others: a quiz on a word the player was never shown is a
+    // guess, and its answer would be graded as if it weren't. A deck too
+    // small to fill the games makes a shorter session.
     let game_pool: Vec<WordCard> = {
         let mut all = game_words.clone();
         all.extend(learn_words);
@@ -402,6 +412,8 @@ fn gen_mixed(ctx: &mut GenCtx, kind: SessionKind, n: usize) -> (Vec<Round>, Vec<
     let verbs = ctx.content.verbs(60);
     let mut conj_used = 0usize;
     let max_conj = (n_games / 6).max(1);
+    let mut dictations = 0usize;
+    let max_dictations = (n_games / 6).max(1);
 
     for w in pick(&game_pool, n_games) {
         let sentences = ctx.content.sentences_for_word(w.word_id, 4);
@@ -431,7 +443,15 @@ fn gen_mixed(ctx: &mut GenCtx, kind: SessionKind, n: usize) -> (Vec<Round>, Vec<
                 types.push(ty);
             }
             1 => {
-                let (round, ty) = listen_round(ctx, rid, &w);
+                // A whole sentence by ear is too much for a word first seen
+                // minutes ago, and one or two a session are plenty.
+                let dictation = if dictations < max_dictations && !ctx.introduced.contains(&w.word_id) {
+                    dictation_round(ctx, rid, &w)
+                } else {
+                    None
+                };
+                dictations += usize::from(dictation.is_some());
+                let (round, ty) = dictation.unwrap_or_else(|| listen_round(ctx, rid, &w));
                 rounds.push(round);
                 types.push(ty);
             }
@@ -528,8 +548,6 @@ fn gen_mixed(ctx: &mut GenCtx, kind: SessionKind, n: usize) -> (Vec<Round>, Vec<
         out_rounds.push(r);
         out_types.push(t);
     }
-    let _ = head;
-    let _ = shuffle::<i32>;
     (out_rounds, out_types)
 }
 
@@ -580,9 +598,12 @@ fn choice_round(ctx: &mut GenCtx, id: i64, w: &WordCard) -> (Round, &'static str
     }
 }
 
+/// Hear the word, pick it out. Without a speech engine there is nothing to
+/// hear, so the word is quizzed in writing instead.
 fn listen_round(ctx: &mut GenCtx, id: i64, w: &WordCard) -> (Round, &'static str) {
-    let gloss = gloss_of(w, &ctx.definition_lang);
-    let _ = &gloss;
+    if !ctx.tts.available() {
+        return choice_round(ctx, id, w);
+    }
     let distractors = ctx.content.similar_words(w, 8);
     let mut options = vec![w.lemma.clone()];
     for d in distractors.iter().take(3) {
@@ -601,6 +622,35 @@ fn listen_round(ctx: &mut GenCtx, id: i64, w: &WordCard) -> (Round, &'static str
         },
         "listen",
     )
+}
+
+/// The longest sentence given as a dictation, in characters. It has to be
+/// held in the ear and typed out exactly. Common words rarely lack one this
+/// short among the four example sentences looked at: 11 of the 2,000 most
+/// frequent did when this was set.
+const DICTATION_MAX_CHARS: usize = 40;
+
+/// Hear a sentence with the word in it, write it down. `None` when there is
+/// no speech engine (nothing could be heard) or no short sentence that this
+/// session hasn't used yet.
+fn dictation_round(ctx: &mut GenCtx, id: i64, w: &WordCard) -> Option<(Round, &'static str)> {
+    if !ctx.tts.available() {
+        return None;
+    }
+    let (sid, es, _) = ctx.content.sentences_for_word(w.word_id, 4).into_iter().find(|(sid, es, _)| {
+        !ctx.used_sentences.contains(sid) && es.chars().count() <= DICTATION_MAX_CHARS
+    })?;
+    ctx.used_sentences.insert(sid);
+    Some((
+        Round::ListenType {
+            id,
+            word_id: w.word_id,
+            audio_base64: ctx.audio(&es),
+            answer: es.clone(),
+            sentence_es: es,
+        },
+        "listen_type",
+    ))
 }
 
 /// Blanks the word as it appears in the sentence ("comió", not "comer") and
@@ -741,45 +791,89 @@ pub fn placement_items(content: &ContentDb) -> Vec<PlacementItem> {
     shuffle(items)
 }
 
-/// Works out the placement and saves it (the known words, the frontier).
-/// Thousands of writes: the caller runs it inside its transaction.
+/// Placement never takes words past this rank as known. Its harder questions
+/// are thousands of ranks apart and say little about the words between them;
+/// and a word wrongly taken as known is never taught, while one wrongly left
+/// costs the player a tap on its intro card.
+const PLACEMENT_MAX_CUT: i64 = 1800;
+
+/// The rank below which placement takes every word as known, from the
+/// answers as (rank of the word, right or wrong), commonest word first.
+///
+/// With four options a guess is right one time in four, so the number of
+/// right answers says little; where they fall says more. Right answers count
+/// up to the second miss: one slip is forgiven, but past two misses a right
+/// answer is as likely a guess. Of those, the hardest may be a guess too, so
+/// the cut is the second-hardest; and a single right answer is no evidence
+/// of anything, so then nothing is marked (a cut of 1).
+fn placement_cut(ranked: &[(i64, bool)]) -> i64 {
+    let mut kept = Vec::new();
+    let mut misses = 0;
+    for &(rank, correct) in ranked {
+        if correct {
+            kept.push(rank);
+        } else {
+            misses += 1;
+            if misses == 2 {
+                break;
+            }
+        }
+    }
+    if kept.len() < 2 {
+        return 1;
+    }
+    kept[kept.len() - 2].min(PLACEMENT_MAX_CUT)
+}
+
+/// Works out the placement and saves it: every teachable word more frequent
+/// than the cut becomes a known word. Up to a couple of thousand writes: the
+/// caller runs it inside its transaction.
 pub fn placement_result(
     user: &Connection,
     content: &ContentDb,
     answers: &[PlacementAnswer],
 ) -> rusqlite::Result<PlacementResult> {
-    let correct = answers.iter().filter(|a| a.correct).count();
-    let cefr = match correct {
-        0..=2 => "A1",
-        3..=5 => "A2",
-        6..=8 => "B1",
-        _ => "B2",
-    };
-    let frontier: i64 = match correct {
-        0..=2 => 30,
-        3..=4 => 150,
-        5..=6 => 400,
-        7..=8 => 900,
-        9..=10 => 1800,
-        _ => 2800,
-    };
-    // mark everything below the frontier as already known (cap 800 words)
+    // by the word's rank, whatever order or band the questions came in; an
+    // id asked twice counts once, one that isn't a word not at all
+    let mut asked = HashSet::new();
+    let mut ranked: Vec<(i64, bool)> = answers
+        .iter()
+        .filter(|a| asked.insert(a.word_id))
+        .filter_map(|a| content.word(a.word_id).map(|w| (w.rank, a.correct)))
+        .collect();
+    ranked.sort_by_key(|(rank, _)| *rank);
+    let cut = placement_cut(&ranked);
+
+    // A word the player has met already is left alone: its card knows more
+    // about it than ten questions do.
+    let carded = deck::card_ids(user);
     let mut marked = 0i64;
-    for w in content.words_by_rank(1, 4000) {
-        if w.rank >= frontier.saturating_sub(60) || marked >= 800 {
-            break;
-        }
-        if w.gloss_en.is_some() {
-            deck::mark_known(user, w.word_id)?;
+    for id in content.teachable_below(cut) {
+        if !carded.contains(&id) {
+            deck::mark_known(user, id)?;
             marked += 1;
         }
     }
-    crate::db::set_setting(user, "frontier_rank", &frontier.to_string())?;
+    // for the record; new words don't start from it (see `new_candidates`)
+    crate::db::set_setting(user, "frontier_rank", &cut.to_string())?;
+    let known = deck::counts(user, content.word_ids()).2;
     Ok(PlacementResult {
-        frontier_rank: frontier,
+        frontier_rank: cut,
         words_marked_known: marked,
-        cefr_estimate: cefr.to_string(),
+        cefr_estimate: cefr_estimate(known).to_string(),
     })
+}
+
+/// The level shown to the player, from how many words they know. Home and
+/// the placement result both use it, so they can't disagree.
+pub fn cefr_estimate(words_known: i64) -> &'static str {
+    match words_known {
+        0..=120 => "A1",
+        121..=500 => "A2",
+        501..=1200 => "B1",
+        1201..=2200 => "B2",
+        _ => "C1",
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -833,11 +927,15 @@ pub fn score_round(
 ) -> rusqlite::Result<ScoreOutcome> {
     let mut earned_badges = Vec::new();
 
-    if correct {
-        *combo += 1;
-        *best_combo = (*best_combo).max(*combo);
-    } else {
-        *combo = 0;
+    // an intro card is shown, not answered: it neither adds to a run of
+    // right answers nor breaks one
+    if round_type != "new_word" {
+        if correct {
+            *combo += 1;
+            *best_combo = (*best_combo).max(*combo);
+        } else {
+            *combo = 0;
+        }
     }
 
     let xp: i32 = if round_type == "review_card" {
@@ -910,7 +1008,9 @@ pub fn session_summary(
     level_up: Option<LevelInfo>,
     new_badges: Vec<Badge>,
 ) -> SessionSummary {
-    let minutes = (deck::now() - session.started_at) / 60.0;
+    // the same whole seconds the session's `events` row holds, so this and
+    // Home's total count the same time
+    let minutes = (session.active_ms / 1000) as f64 / 60.0;
     let accuracy = if session.total_graded > 0 {
         session.correct as f32 / session.total_graded as f32
     } else {
@@ -946,18 +1046,47 @@ mod tests {
         .unwrap()
     }
 
+    /// A directory that is removed again when the test is done with it.
+    struct Scratch(std::path::PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A new, empty progress database in a directory of its own. Bind the
+    /// directory first, as returned, so that it outlives the connection.
+    fn fresh_user() -> (Scratch, Connection) {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!("tilde_session_test_{}_{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let user = crate::db::open(&dir.join("tilde_user.db")).unwrap();
+        (Scratch(dir), user)
+    }
+
     fn with_ctx<T>(f: impl FnOnce(&mut GenCtx) -> T) -> T {
+        with_ctx_speaking(Tts::off, f)
+    }
+
+    /// A voice that is there but never asked to speak: generating rounds
+    /// only looks in the audio cache.
+    fn voice(dir: &std::path::Path) -> Tts {
+        Tts::with_espeak(dir, "/bin/true".into())
+    }
+
+    fn with_ctx_speaking<T>(tts: impl FnOnce(&std::path::Path) -> Tts, f: impl FnOnce(&mut GenCtx) -> T) -> T {
         let content = content();
-        let dir = std::env::temp_dir();
-        let user = crate::db::open(&dir.join(format!("tilde_session_test_{}.db", std::process::id()))).unwrap();
-        let tts = Tts::off(&dir);
+        let (dir, user) = fresh_user();
+        let tts = tts(&dir.0);
         let (mut used, mut introduced) = (HashSet::new(), HashSet::new());
         let mut ctx = GenCtx {
             content: &content,
             user: &user,
             tts: &tts,
             definition_lang: "en".into(),
-            frontier: 1,
             used_sentences: &mut used,
             introduced: &mut introduced,
             to_speak: Default::default(),
@@ -1029,7 +1158,7 @@ mod tests {
             .unwrap();
         assert!(flagged > 0);
         assert!(content
-            .new_candidates(1, 12_000, &HashSet::new())
+            .new_candidates(12_000, &HashSet::new())
             .iter()
             .chain(&content.verbs(2_000))
             .all(|w| !["mierda", "joder", "computadora"].contains(&w.lemma.as_str())));
@@ -1052,5 +1181,153 @@ mod tests {
                 assert!(parts(&w.gloss_en).is_disjoint(&parts(&d.gloss_en)), "{} / {}: {:?} vs {:?}", w.lemma, d.lemma, w.gloss_en, d.gloss_en);
             }
         }
+    }
+
+    #[test]
+    fn a_session_tops_up_its_new_words_while_the_deck_cannot_fill_its_games() {
+        let planned = |learning| {
+            [SessionKind::Quick, SessionKind::Standard, SessionKind::Deep, SessionKind::ReviewOnly, SessionKind::Sidecar]
+                .map(|kind| planned_new_words(kind, learning))
+        };
+        // twice the usual number at most, however empty the deck
+        assert_eq!(planned(0), [4, 6, 12, 0, 0]);
+        // then one fewer for each word the deck can lend to the games
+        assert_eq!(planned(1), [4, 6, 12, 0, 0]);
+        assert_eq!(planned(2), [3, 6, 12, 0, 0]);
+        assert_eq!(planned(4), [2, 4, 11, 0, 0]);
+        assert_eq!(planned(9), [2, 3, 6, 0, 0]);
+        assert_eq!(planned(5_000), [2, 3, 6, 0, 0]);
+    }
+
+    #[test]
+    fn placement_counts_right_answers_up_to_the_second_miss() {
+        let ranks = [40, 120, 350, 800, 1600, 2800, 4500, 6500, 9000, 11500];
+        let cut = |right: &[usize]| {
+            let answers: Vec<(i64, bool)> = ranks.iter().enumerate().map(|(i, rank)| (*rank, right.contains(&i))).collect();
+            placement_cut(&answers)
+        };
+        // no evidence: nothing, one right answer, or one right answer among guesses
+        assert_eq!(placement_cut(&[]), 1);
+        assert_eq!(cut(&[]), 1);
+        assert_eq!(cut(&[0]), 1);
+        assert_eq!(cut(&[5]), 1);
+        assert_eq!(cut(&[2, 9]), 1, "a right answer after two misses is not counted");
+        // the cut is the second-hardest answer kept
+        assert_eq!(cut(&[0, 1]), 40);
+        assert_eq!(cut(&[0, 1, 2]), 120);
+        assert_eq!(cut(&[0, 1, 2, 3, 4]), 800);
+        // one slip is forgiven, wherever it falls
+        assert_eq!(cut(&[1, 2, 3]), 350);
+        assert_eq!(cut(&[0, 1, 2, 4]), 350);
+        assert_eq!(cut(&[0, 1, 2, 4, 6, 7, 8, 9]), 350, "answers past the second miss changed the cut");
+        // and however well it goes, the hard questions vouch for no more than this
+        assert_eq!(cut(&[0, 1, 2, 3, 4, 5]), 1600);
+        assert_eq!(cut(&[0, 1, 2, 3, 4, 5, 6]), PLACEMENT_MAX_CUT);
+        assert_eq!(cut(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), PLACEMENT_MAX_CUT);
+    }
+
+    fn dictations(g: &Generated) -> Vec<(i64, &str)> {
+        g.rounds
+            .iter()
+            .filter_map(|r| match r {
+                Round::ListenType { word_id, sentence_es, answer, .. } => {
+                    assert_eq!(sentence_es, answer);
+                    Some((*word_id, sentence_es.as_str()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn dictation_only_with_speech_and_for_words_met_before() {
+        let content = content();
+        let (dir, user) = fresh_user();
+        let speaking = voice(&dir.0);
+        let silent = Tts::off(&dir.0);
+        let count = |g: &Generated, ty: &str| g.round_types.iter().filter(|t| **t == ty).count();
+
+        // A first session: every word in it was first shown minutes ago. Those
+        // are listened for one at a time, never as a sentence to write down.
+        let first = generate(SessionKind::Standard, &content, &user, &speaking, "en");
+        assert_eq!((count(&first, "listen_type"), dictations(&first).len()), (0, 0));
+        assert!(count(&first, "listen") > 0);
+
+        let deck: Vec<WordCard> = content.new_candidates(20, &HashSet::new());
+        for w in &deck {
+            deck::introduce(&user, w.word_id).unwrap();
+        }
+        // Generates a session and returns how many dictations it holds, having
+        // checked each.
+        let dictated = |kind: SessionKind| {
+            let g = generate(kind, &content, &user, &speaking, "en");
+            let found = dictations(&g);
+            for (word_id, sentence) in &found {
+                assert!(deck.iter().any(|w| w.word_id == *word_id), "{kind:?}: a dictation for a word first shown in this session");
+                assert!(sentence.chars().count() <= DICTATION_MAX_CHARS, "{kind:?}: {sentence}");
+            }
+            assert_eq!(found.len(), count(&g, "listen_type"));
+            // one or two in a mixed session, however long
+            if kind != SessionKind::Sidecar {
+                assert!(found.len() <= (shape(kind).3 / 6).max(1), "{kind:?}: {} dictations", found.len());
+            }
+            found.len()
+        };
+        // Which words get which game is drawn at random, so one session may
+        // have none, and it takes a few to see the most there can be.
+        for (kind, sessions) in [(SessionKind::Standard, 6), (SessionKind::Deep, 2), (SessionKind::Sidecar, 2)] {
+            let total: usize = (0..sessions).map(|_| dictated(kind)).sum();
+            assert!(total > 0, "{kind:?}: no dictation in {sessions} sessions");
+        }
+        assert_eq!(dictated(SessionKind::ReviewOnly), 0);
+
+        // with no voice there is nothing to listen to, in any kind of session
+        for kind in [SessionKind::Quick, SessionKind::Standard, SessionKind::Deep, SessionKind::Sidecar, SessionKind::ReviewOnly] {
+            let voiced = generate(kind, &content, &user, &speaking, "en");
+            let g = generate(kind, &content, &user, &silent, "en");
+            assert_eq!(g.rounds.len(), voiced.rounds.len(), "{kind:?}: rounds were dropped, not swapped");
+            assert_eq!((count(&g, "listen"), count(&g, "listen_type")), (0, 0), "{kind:?} without a speech engine");
+            assert!(!g.rounds.iter().any(|r| matches!(r, Round::Listen { .. } | Round::ListenType { .. })));
+            assert!(g.to_speak.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_dictation_is_a_sentence_short_enough_to_write_down() {
+        let too_long = |es: &str| es.chars().count() > DICTATION_MAX_CHARS;
+        // words whose first example is too long, with a shorter one further on
+        let content = content();
+        let awkward: Vec<WordCard> = content
+            .new_candidates(usize::MAX, &HashSet::new())
+            .into_iter()
+            .filter(|w| {
+                let examples = content.sentences_for_word(w.word_id, 4);
+                examples.first().is_some_and(|(_, es, _)| too_long(es)) && examples.iter().any(|(_, es, _)| !too_long(es))
+            })
+            .take(5)
+            .collect();
+        assert!(!awkward.is_empty(), "no word in the dictionary has a long first example and a short later one");
+
+        with_ctx_speaking(voice, |ctx| {
+            for w in &awkward {
+                let short: Vec<String> = ctx
+                    .content
+                    .sentences_for_word(w.word_id, 4)
+                    .into_iter()
+                    .map(|(_, es, _)| es)
+                    .filter(|es| !too_long(es))
+                    .collect();
+                // each short example once, in order, and then no more
+                for expected in &short {
+                    let Some((Round::ListenType { word_id, sentence_es, answer, .. }, "listen_type")) = dictation_round(ctx, 0, w) else {
+                        panic!("no dictation for a word with a short example")
+                    };
+                    assert_eq!((word_id, &sentence_es, &answer), (w.word_id, expected, expected));
+                }
+                assert!(dictation_round(ctx, 0, w).is_none(), "an example was dictated twice, or a long one was");
+            }
+        });
+        // and never without a voice to say it
+        with_ctx(|ctx| assert!(dictation_round(ctx, 0, &awkward[0]).is_none()));
     }
 }

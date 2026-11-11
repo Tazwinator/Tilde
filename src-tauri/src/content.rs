@@ -6,7 +6,16 @@ use tilde_core::types::{ConjRow, WordCard};
 
 pub struct ContentDb {
     pub conn: Connection,
+    ids: HashSet<i64>,
 }
+
+/// A word that may be taught: it has a meaning to show, and is neither vulgar
+/// nor used only outside Spain. Every query that picks words to introduce or
+/// to place by goes through this, so they can't disagree about which words
+/// those are. (The length test keeps stray single letters out until the
+/// content database itself drops them.)
+const TEACHABLE: &str =
+    "(gloss_en IS NOT NULL AND LENGTH(lemma) >= 2 AND register IS NULL AND region IS NULL)";
 
 impl ContentDb {
     /// Opens the bundled DB as immutable: installed resources live in read-only
@@ -22,7 +31,19 @@ impl ContentDb {
         // in the middle of a session
         conn.query_row("SELECT id FROM words LIMIT 1", [], |_| Ok(()))
             .map_err(|e| format!("{}: {e}", path.display()))?;
-        Ok(ContentDb { conn })
+        let ids = conn
+            .prepare("SELECT id FROM words")
+            .and_then(|mut stmt| stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>())
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(ContentDb { conn, ids })
+    }
+
+    /// The id of every word there is. The file never changes while it is
+    /// open, so this is read once. A card whose word isn't here (the word
+    /// left the list in a later build) is kept, but must not be served or
+    /// counted: see `deck`.
+    pub fn word_ids(&self) -> &HashSet<i64> {
+        &self.ids
     }
 
     pub fn meta(&self, key: &str) -> Option<String> {
@@ -76,24 +97,21 @@ impl ContentDb {
             .unwrap_or_default()
     }
 
-    /// Newest teachable words at or after `frontier` rank. Vulgar words and
-    /// ones only used outside Spain are never introduced.
-    /// The next `limit` teachable words from `frontier` up, in frequency order,
-    /// skipping `skip` (every word the player already has a card for). The
-    /// frontier itself only moves at placement, so this is what keeps new
-    /// words coming session after session.
-    pub fn new_candidates(&self, frontier: i64, limit: usize, skip: &HashSet<i64>) -> Vec<WordCard> {
+    /// The `limit` most frequent teachable words not in `skip` (every word
+    /// the player already has a card for): what to teach next. Starting from
+    /// the commonest word each time, rather than from a rank placement once
+    /// set, is what leaves no gap between the words a player knows and the
+    /// ones they are taught.
+    pub fn new_candidates(&self, limit: usize, skip: &HashSet<i64>) -> Vec<WordCard> {
         let mut stmt = self
             .conn
-            .prepare(
+            .prepare(&format!(
                 "SELECT id, lemma, pos, rank, gloss_en, gloss_es FROM words
-                 WHERE rank >= ?1 AND gloss_en IS NOT NULL AND LENGTH(lemma) >= 2
-                   AND register IS NULL AND region IS NULL
-                 ORDER BY rank",
-            )
+                 WHERE {TEACHABLE} ORDER BY rank"
+            ))
             .unwrap();
         // rows are stepped lazily, so this reads only as far as it needs to
-        stmt.query_map([frontier], word_from_row)
+        stmt.query_map([], word_from_row)
             .map(|rows| {
                 rows.filter_map(|r| r.ok())
                     .filter(|w| !skip.contains(&w.word_id))
@@ -103,15 +121,26 @@ impl ContentDb {
             .unwrap_or_default()
     }
 
+    /// Ids of the teachable words more frequent than `max_rank`: the ones
+    /// placement marks as known.
+    pub fn teachable_below(&self, max_rank: i64) -> Vec<i64> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!("SELECT id FROM words WHERE rank < ?1 AND {TEACHABLE} ORDER BY rank"))
+            .unwrap();
+        stmt.query_map([max_rank], |r| r.get(0))
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Teachable words from `min_rank` up, for the placement questions.
     pub fn words_by_rank(&self, min_rank: i64, limit: i64) -> Vec<WordCard> {
         let mut stmt = self
             .conn
-            .prepare(
+            .prepare(&format!(
                 "SELECT id, lemma, pos, rank, gloss_en, gloss_es FROM words
-                 WHERE rank >= ?1 AND gloss_en IS NOT NULL AND LENGTH(lemma) >= 2
-                   AND register IS NULL AND region IS NULL
-                 ORDER BY rank LIMIT ?2",
-            )
+                 WHERE rank >= ?1 AND {TEACHABLE} ORDER BY rank LIMIT ?2"
+            ))
             .unwrap();
         stmt.query_map(rusqlite::params![min_rank, limit], word_from_row)
             .map(|rows| rows.filter_map(|r| r.ok()).collect())
@@ -443,6 +472,17 @@ mod tests {
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(lemma.unwrap(), Some("hablar".to_string()));
+    }
+
+    #[test]
+    fn the_word_id_set_holds_every_word() {
+        let content = ContentDb::open(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/resources/content.db"))).unwrap();
+        let words: i64 = content.conn.query_row("SELECT COUNT(*) FROM words", [], |r| r.get(0)).unwrap();
+        assert!(words > 0);
+        assert_eq!(content.word_ids().len() as i64, words);
+        let (lowest, highest): (i64, i64) = content.conn.query_row("SELECT MIN(id), MAX(id) FROM words", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert!(content.word_ids().contains(&lowest) && content.word_ids().contains(&highest));
+        assert!(!content.word_ids().contains(&(highest + 1)));
     }
 
     #[test]

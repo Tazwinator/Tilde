@@ -106,12 +106,6 @@ fn settings(conn: &Connection) -> Settings {
     }
 }
 
-fn frontier(conn: &Connection) -> i64 {
-    db::get_setting(conn, "frontier_rank")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(1)
-}
-
 fn total_xp(conn: &Connection) -> i64 {
     conn.query_row(
         "SELECT COALESCE(SUM(xp), 0) FROM events",
@@ -121,16 +115,6 @@ fn total_xp(conn: &Connection) -> i64 {
     .unwrap_or(0)
 }
 
-fn cefr_estimate(words_known: i64) -> &'static str {
-    match words_known {
-        0..=120 => "A1",
-        121..=500 => "A2",
-        501..=1200 => "B1",
-        1201..=2200 => "B2",
-        _ => "C1",
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
@@ -138,7 +122,8 @@ fn cefr_estimate(words_known: i64) -> &'static str {
 #[tauri::command(async)]
 fn profile_get(state: tauri::State<AppState>) -> Profile {
     let conn = state.user.locked();
-    let (reviews_due, learning, known) = deck::counts(&conn);
+    let content = state.content.locked();
+    let (reviews_due, learning, known) = deck::counts(&conn, content.word_ids());
     let xp = total_xp(&conn);
     let (level, name) = tilde_core::level_for_xp(xp);
     let sessions_total: i64 = conn
@@ -162,20 +147,17 @@ fn profile_get(state: tauri::State<AppState>) -> Profile {
         .query_row("SELECT COUNT(*) FROM badges", [], |r| r.get(0))
         .unwrap_or(0);
     let s = settings(&conn);
-    // capped by what's actually left to learn from the frontier up
+    // what a session started now would introduce, capped by what's left to learn
     let new_words = {
         let kinds = [SessionKind::Quick, SessionKind::Standard, SessionKind::Deep, SessionKind::ReviewOnly];
-        let most = kinds.iter().map(|k| session::new_word_count(*k)).max().unwrap_or(0);
-        let left = state
-            .content
-            .locked()
-            .new_candidates(frontier(&conn), most, &deck::card_ids(&conn))
-            .len();
+        let planned = |k: &SessionKind| session::planned_new_words(*k, learning as usize);
+        let most = kinds.iter().map(planned).max().unwrap_or(0);
+        let left = content.new_candidates(most, &deck::card_ids(&conn)).len();
         kinds
             .iter()
             .map(|k| {
                 let key = serde_json::to_value(k).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
-                (key, session::new_word_count(*k).min(left) as i64)
+                (key, planned(k).min(left) as i64)
             })
             .collect()
     };
@@ -187,7 +169,7 @@ fn profile_get(state: tauri::State<AppState>) -> Profile {
         words_known: known,
         words_learning: learning,
         minutes_total,
-        cefr_estimate: cefr_estimate(known).to_string(),
+        cefr_estimate: session::cefr_estimate(known).to_string(),
         reviews_due,
         new_words_by_kind: new_words,
         days_since_last_session: if sessions_total == 0 { -1 } else { days_since },
@@ -210,7 +192,6 @@ fn session_start(state: tauri::State<AppState>, kind: SessionKind) -> SessionSta
         &conn,
         &state.tts,
         &s.definition_lang,
-        frontier(&conn),
     );
     drop(conn);
     drop(content);
@@ -226,22 +207,29 @@ fn session_start(state: tauri::State<AppState>, kind: SessionKind) -> SessionSta
         });
     }
     let id = state.next_session.fetch_add(1, Ordering::SeqCst);
+    let now = deck::now();
     let session = Session {
         kind,
         rounds: generated.rounds.clone(),
         round_types: generated.round_types,
-        results: Vec::new(),
         combo: 0,
         best_combo: 0,
         xp: 0,
         new_words: Vec::new(),
-        started_at: deck::now(),
+        active_ms: 0,
+        last_active: now,
         correct: 0,
         total_graded: 0,
         event_id: None,
         answered: HashSet::new(),
     };
-    state.sessions.locked().insert(id, session);
+    let mut sessions = state.sessions.locked();
+    // A session whose window was closed on it is never finished, and would
+    // sit here until Tilde quits. There is one window, so one session being
+    // played at a time; what it earned is already in its `events` row.
+    sessions.retain(|_, s| now - s.last_active < session::STALE_S);
+    sessions.insert(id, session);
+    drop(sessions);
     SessionStart {
         session_id: id,
         kind,
@@ -276,9 +264,14 @@ fn round_submit(
     let Some(index) = index.filter(|i| !session.answered.contains(i)) else {
         return Ok(neutral(session.combo));
     };
+    // whether or not the answer can be saved, the player is here
+    session.last_active = deck::now();
     let before = session.mark();
     let mut user = state.user.locked();
-    let graded = db::in_transaction(&mut user, |tx| grade_round(tx, session, session_id, index, &result));
+    let content = state.content.locked();
+    let graded = db::in_transaction(&mut user, |tx| {
+        grade_round(tx, content.word_ids(), session, session_id, index, &result)
+    });
     match graded {
         // Answered only now that it is saved...
         Ok(feedback) => {
@@ -300,6 +293,7 @@ fn round_submit(
 /// caller rewinds it.
 fn grade_round(
     tx: &Connection,
+    live: &HashSet<i64>,
     session: &mut Session,
     session_id: i64,
     index: usize,
@@ -310,10 +304,12 @@ fn grade_round(
     let correct = result.correct;
     let quality = result.quality;
 
-    session.results.push((correct, quality.unwrap_or(if correct { 3 } else { 1 })));
-    session.total_graded += 1;
-    if correct {
-        session.correct += 1;
+    session.active_ms += result.duration_ms.clamp(0, session::ROUND_MS_CAP);
+    if round_type != "new_word" {
+        session.total_graded += 1;
+        if correct {
+            session.correct += 1;
+        }
     }
 
     // schedule the card
@@ -339,8 +335,13 @@ fn grade_round(
 
     // a new word joins the deck once its intro has actually been seen
     if let Round::NewWord { word, .. } = &round {
-        deck::introduce(tx, word.word_id)?;
-        session.new_words.push(word.lemma.clone());
+        if quality == Some(4) {
+            // "Ya me la sé": known, and not one of the session's new words
+            deck::mark_known(tx, word.word_id)?;
+        } else {
+            deck::introduce(tx, word.word_id)?;
+            session.new_words.push(word.lemma.clone());
+        }
     }
 
     // match rounds: each pair on its own, so one slip doesn't fail all four
@@ -352,7 +353,7 @@ fn grade_round(
     }
 
     let xp_before = total_xp(tx);
-    let mut outcome = session::score_round(
+    let outcome = session::score_round(
         tx,
         round_type,
         correct,
@@ -361,38 +362,35 @@ fn grade_round(
         &mut session.best_combo,
         &mut session.xp,
     )?;
-    save_session_event(tx, session)?;
+    save_session_event(tx, live, session)?;
     tx.execute(
         "INSERT INTO round_log(ts, session_id, round_type, correct) VALUES (?1, ?2, ?3, ?4)",
         rusqlite::params![deck::now() as i64, session_id, round_type, i64::from(correct)],
     )?;
-    if session::award_badge(tx, "first-session")? {
-        outcome.new_badges.push(session::find_badge("first-session"));
-    }
     Ok(RoundFeedback {
         correct_answer: session::correct_answer_of(&round),
         xp_gained: outcome.xp_gained,
         combo: outcome.combo,
         level_up: session::level_up(xp_before, total_xp(tx)),
-        new_badges: std::mem::take(&mut outcome.new_badges),
+        new_badges: outcome.new_badges,
     })
 }
 
 /// Writes the session's running totals to its `events` row, creating the row
 /// on the first answer, so XP and minutes count even if the session is never
 /// finished (the app closed, or the player just walked away).
-fn save_session_event(conn: &Connection, session: &mut Session) -> rusqlite::Result<()> {
+fn save_session_event(conn: &Connection, live: &HashSet<i64>, session: &mut Session) -> rusqlite::Result<()> {
     let kind_label = match session.kind {
         SessionKind::Sidecar => "sidecar",
         _ => "session",
     };
     let meta = serde_json::to_string(&EventMeta {
-        words_known: deck::counts(conn).2,
+        words_known: deck::counts(conn, live).2,
         kind_label: kind_label.to_string(),
     })
     .unwrap_or_default();
     let now = deck::now();
-    let duration_s = (now - session.started_at).max(0.0) as i64;
+    let duration_s = session.active_ms / 1000;
     match session.event_id {
         Some(id) => {
             conn.execute(
@@ -442,19 +440,32 @@ fn session_finish(state: tauri::State<AppState>, session_id: i64) -> SessionSumm
         };
     };
     let user = state.user.locked();
-    if session.event_id.is_some() {
-        // Only the last few seconds of the session's length ride on this:
-        // its XP was saved round by round. Not worth failing the summary for.
-        if let Err(e) = save_session_event(&user, &mut session) {
-            eprintln!("could not update the session's length: {e}");
+    // A session has its row in `events` from the first round the player got
+    // through, an intro card included; one without was opened and left, and
+    // has nothing to save or back up.
+    let played = session.event_id.is_some();
+    let words_learned = {
+        let content = state.content.locked();
+        if played {
+            // Nothing new rides on this: the session's XP and length were
+            // saved round by round. Not worth failing the summary for.
+            if let Err(e) = save_session_event(&user, content.word_ids(), &mut session) {
+                eprintln!("could not update the session's row: {e}");
+            }
         }
-    }
-    let words_known = deck::counts(&user).2;
+        deck::learned_count(&user, content.word_ids())
+    };
 
     // badge checks. No transaction here: a badge that can't be written just
     // isn't earned yet, and is checked for again when the next session ends.
     let award = |id: &str| session::award_badge(&user, id).unwrap_or(false);
     let mut badges = Vec::new();
+    // Here and not on the first answer: the badge is for finishing, and this
+    // is where the summary can show it. It takes an answer, though: new
+    // words looked at and nothing more is a summary of no rounds.
+    if session.total_graded > 0 && award("first-session") {
+        badges.push(session::find_badge("first-session"));
+    }
     let sessions_total: i64 = user
         .query_row(
             "SELECT COUNT(*) FROM events WHERE kind IN ('session','sidecar')",
@@ -468,10 +479,10 @@ fn session_finish(state: tauri::State<AppState>, session_id: i64) -> SessionSumm
     for (cond, id) in [
         (sessions_total >= 10, "ten-sessions"),
         (sessions_total >= 50, "fifty-sessions"),
-        (words_known >= 50, "words-50"),
-        (words_known >= 200, "words-200"),
-        (words_known >= 500, "words-500"),
-        (words_known >= 1000, "words-1000"),
+        (words_learned >= 50, "words-50"),
+        (words_learned >= 200, "words-200"),
+        (words_learned >= 500, "words-500"),
+        (words_learned >= 1000, "words-1000"),
         (minutes_total >= 60, "minutes-60"),
         (minutes_total >= 300, "minutes-300"),
         (minutes_total >= 900, "minutes-900"),
@@ -528,7 +539,7 @@ fn session_finish(state: tauri::State<AppState>, session_id: i64) -> SessionSumm
     let total = total_xp(&user);
     let level_up = session::level_up(total - session.xp, total);
     let summary = session::session_summary(&user, &session, level_up, badges);
-    if session.total_graded > 0 {
+    if played {
         match backup::write(&user, &backup::folder(&state.app_dir), backup::Kind::Auto) {
             Ok(_) => state.backup_worked(),
             Err(e) => state.backup_failed(e),
@@ -560,10 +571,14 @@ fn placement_submit(
     let mut conn = state.user.locked();
     let content = state.content.locked();
     db::in_transaction(&mut conn, |tx| {
+        // Placement happens once. Asked again (a second click, a stale page)
+        // it answers as it did then and marks nothing more.
+        let done = db::get_setting(tx, "placement").and_then(|v| serde_json::from_str(&v).ok());
+        if let Some(result) = done {
+            return Ok(result);
+        }
         let result = session::placement_result(tx, &content, &answers)?;
         db::set_setting(tx, "placement", &serde_json::to_string(&result).unwrap())?;
-        // awarded without a word: placement alone isn't worth announcing
-        session::award_badge(tx, "first-session")?;
         Ok(result)
     })
     .map_err(|e| db::user_error(&e))
@@ -571,16 +586,16 @@ fn placement_submit(
 
 // --- words ---
 
+/// Whether the dictionary has this word. Commands that are handed a word id
+/// do nothing for one it hasn't. The content lock is let go before this
+/// returns: a caller that goes on to lock `user` must not hold it (the order
+/// is user, then content).
+fn in_content(state: &AppState, word_id: i64) -> bool {
+    state.content.locked().word_ids().contains(&word_id)
+}
+
 fn hit(conn: &Connection, w: &tilde_core::types::WordCard) -> WordHit {
-    let known = conn
-        .query_row(
-            "SELECT state FROM cards WHERE word_id = ?1",
-            [w.word_id],
-            |r| r.get::<_, i64>(0),
-        )
-        .map(|s| s >= 2)
-        .unwrap_or(false);
-    session::to_hit(w, known)
+    session::to_hit(w, deck::is_known(conn, w.word_id))
 }
 
 #[tauri::command(async)]
@@ -641,12 +656,20 @@ fn word_detail(state: tauri::State<AppState>, word_id: i64) -> Option<WordDetail
 
 #[tauri::command(async)]
 fn word_mark_known(state: tauri::State<AppState>, word_id: i64) -> Result<(), String> {
+    if !in_content(&state, word_id) {
+        return Ok(());
+    }
     let conn = state.user.locked();
     deck::mark_known(&conn, word_id).map_err(|e| db::user_error(&e))
 }
 
 #[tauri::command(async)]
 fn word_reset(state: tauri::State<AppState>, word_id: i64) -> Result<(), String> {
+    // The card of a word that left the dictionary is dormant, not rubbish: it
+    // works again if the word comes back, so it isn't deleted by id either.
+    if !in_content(&state, word_id) {
+        return Ok(());
+    }
     let conn = state.user.locked();
     deck::reset(&conn, word_id).map_err(|e| db::user_error(&e))
 }
@@ -779,13 +802,16 @@ fn sentences_list(state: tauri::State<AppState>) -> Vec<MinedSentence> {
 #[tauri::command(async)]
 fn sentence_add_to_deck(state: tauri::State<AppState>, id: i64) -> Result<(), String> {
     let mut conn = state.user.locked();
+    let content = state.content.locked();
     db::in_transaction(&mut conn, |tx| {
         tx.execute("UPDATE mined SET in_deck = 1 WHERE id = ?1", [id])?;
         let word_ids: Vec<i64> = tx
             .prepare("SELECT word_id FROM mined_words WHERE mined_id = ?1")?
             .query_map([id], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?;
-        for wid in word_ids {
+        // a sentence mined under an older dictionary may name a word that
+        // has since left it: no card for that one
+        for wid in word_ids.into_iter().filter(|wid| content.word_ids().contains(wid)) {
             deck::introduce(tx, wid)?;
         }
         Ok(())

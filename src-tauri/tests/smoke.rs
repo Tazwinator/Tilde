@@ -27,7 +27,7 @@ fn user_db(test: &str) -> rusqlite::Connection {
 fn content_db_has_data() {
     let c = content_db();
     assert!(c.search("hablar", 10).iter().any(|w| w.lemma == "hablar"));
-    let words = c.new_candidates(1, 20, &Default::default());
+    let words = c.new_candidates(20, &Default::default());
     assert!(!words.is_empty());
     assert!(c.verbs(50).len() >= 10);
 }
@@ -38,7 +38,7 @@ fn generates_every_session_kind() {
     let user = user_db("kinds");
     let tts = Tts::off(&std::env::temp_dir());
     // something due, so ReviewOnly has a card to show
-    deck::introduce(&user, content.new_candidates(1, 1, &Default::default())[0].word_id).unwrap();
+    deck::introduce(&user, content.new_candidates(1, &Default::default())[0].word_id).unwrap();
     for kind in [
         tilde_core::types::SessionKind::Quick,
         tilde_core::types::SessionKind::Standard,
@@ -46,7 +46,7 @@ fn generates_every_session_kind() {
         tilde_core::types::SessionKind::Sidecar,
         tilde_core::types::SessionKind::ReviewOnly,
     ] {
-        let g = session::generate(kind, &content, &user, &tts, "en", 1);
+        let g = session::generate(kind, &content, &user, &tts, "en");
         assert!(!g.rounds.is_empty(), "{kind:?} generated no rounds");
         assert_eq!(g.rounds.len(), g.round_types.len());
     }
@@ -80,7 +80,6 @@ fn full_session_lifecycle() {
         &user,
         &tts,
         "en",
-        result.frontier_rank,
     );
     let mut xp = 0i64;
     let mut combo = 0i32;
@@ -103,7 +102,7 @@ fn full_session_lifecycle() {
         let _ = i;
     }
     assert!(xp > 0);
-    let (_, _, known) = deck::counts(&user);
+    let (_, _, known) = deck::counts(&user, content.word_ids());
     assert!(known > 0, "grading should create cards");
 }
 

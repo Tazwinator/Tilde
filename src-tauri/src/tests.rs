@@ -352,14 +352,88 @@ fn try_answer(
     index: usize,
     correct: bool,
 ) -> Result<RoundFeedback, String> {
-    let result = RoundResult {
-        round_index: index,
-        correct,
-        duration_ms: 1000,
-        quality: None,
-        missed_word_ids: vec![],
-    };
+    submit(app, start, index, correct, 1000, None)
+}
+
+fn submit(
+    app: &tauri::App<MockRuntime>,
+    start: &SessionStart,
+    index: usize,
+    correct: bool,
+    duration_ms: i64,
+    quality: Option<i32>,
+) -> Result<RoundFeedback, String> {
+    let result = RoundResult { round_index: index, correct, duration_ms, quality, missed_word_ids: vec![] };
     round_submit(app.state(), start.session_id, match_round_id(&start.rounds[index]), result)
+}
+
+/// The first round that asks something (not an intro card).
+fn first_quiz(start: &SessionStart) -> usize {
+    start.rounds.iter().position(|r| !matches!(r, Round::NewWord { .. })).expect("a round that isn't an intro")
+}
+
+/// The words a round asks about; none for an intro card, which only shows one.
+fn quizzed(round: &Round) -> Vec<i64> {
+    match round {
+        Round::NewWord { .. } => vec![],
+        Round::Match { pairs, .. } => pairs.iter().map(|p| p.word_id).collect(),
+        Round::Choice { word_id, .. }
+        | Round::Listen { word_id, .. }
+        | Round::ListenType { word_id, .. }
+        | Round::Build { word_id, .. }
+        | Round::Cloze { word_id, .. }
+        | Round::Conjugation { word_id, .. }
+        | Round::ReviewCard { word_id, .. } => vec![*word_id],
+    }
+}
+
+/// Runs `f` on the app's own progress connection.
+fn user<T>(app: &tauri::App<MockRuntime>, f: impl FnOnce(&Connection) -> T) -> T {
+    f(&app.state::<AppState>().user.lock().unwrap())
+}
+
+/// Every word that can be taught, commonest first.
+fn teachable(app: &tauri::App<MockRuntime>) -> Vec<tilde_core::types::WordCard> {
+    app.state::<AppState>().content.lock().unwrap().new_candidates(usize::MAX, &HashSet::new())
+}
+
+/// (stability, state) of the word's card, if it has one.
+fn card(app: &tauri::App<MockRuntime>, word_id: i64) -> Option<(f64, i64)> {
+    user(app, |conn| {
+        conn.query_row("SELECT stability, state FROM cards WHERE word_id = ?1", [word_id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .ok()
+    })
+}
+
+fn earned(app: &tauri::App<MockRuntime>) -> Vec<String> {
+    badges_list(app.state()).into_iter().filter(|b| b.earned_at.is_some()).map(|b| b.id).collect()
+}
+
+fn ids(badges: &[Badge]) -> Vec<&str> {
+    badges.iter().map(|b| b.id.as_str()).collect()
+}
+
+/// Ids no word has: what a card is left with when its word leaves the
+/// dictionary in a later build.
+fn orphan_ids(app: &tauri::App<MockRuntime>, n: i64) -> Vec<i64> {
+    let state = app.state::<AppState>();
+    let highest = state.content.lock().unwrap().word_ids().iter().copied().max().unwrap();
+    (0..n).map(|k| highest + 1000 + k).collect()
+}
+
+/// Cards for `word_ids`, known for a good while (`state` 2) or still being
+/// learned (1), and due since `due_ts`.
+fn insert_cards(app: &tauri::App<MockRuntime>, word_ids: &[i64], state: i64, due_ts: i64) {
+    user(app, |conn| {
+        for id in word_ids {
+            conn.execute(
+                "INSERT INTO cards(word_id, stability, difficulty, due_ts, last_review_ts, reps, lapses, state)
+                 VALUES (?1, 100.0, 5.0, ?2, 0, 3, 0, ?3)",
+                [*id, due_ts, state],
+            )
+            .unwrap();
+        }
+    })
 }
 
 /// Plays the first round of a fresh session and finishes it.
@@ -590,7 +664,7 @@ fn new_words_keep_coming_past_every_word_already_in_the_deck() {
         let first = {
             let state = app.state::<AppState>();
             let content = state.content.lock().unwrap();
-            content.new_candidates(1, 300, &HashSet::new())
+            content.new_candidates(300, &HashSet::new())
         };
         for w in &first {
             word_mark_known(app.state(), w.word_id).unwrap();
@@ -711,7 +785,7 @@ fn one_command_panicking_does_not_take_the_rest_down() {
         assert!(state.user.is_poisoned());
         assert_eq!(profile_get(app.state()).xp, 0);
         let start = session_start(app.state(), SessionKind::Quick);
-        assert!(answer(app, &start, 0, true).combo >= 1);
+        assert!(answer(app, &start, first_quiz(&start), true).combo >= 1);
     });
 }
 
@@ -756,9 +830,36 @@ fn mined_words_are_the_ones_in_the_sentence_not_their_relatives() {
 #[test]
 fn each_session_card_says_how_many_new_words_it_brings() {
     with_app(|app| {
-        let counts = profile_get(app.state()).new_words_by_kind;
-        let n = |k: &str| counts.get(k).copied();
-        assert_eq!((n("quick"), n("standard"), n("deep"), n("review_only")), (Some(2), Some(3), Some(6), Some(0)));
+        let promised = |app: &tauri::App<MockRuntime>| {
+            let counts = profile_get(app.state()).new_words_by_kind;
+            ["quick", "standard", "deep", "review_only"].map(|k| counts.get(k).copied().expect(k))
+        };
+        // ...and a session started now brings exactly that many
+        let brought = |app: &tauri::App<MockRuntime>| {
+            [SessionKind::Quick, SessionKind::Standard, SessionKind::Deep, SessionKind::ReviewOnly]
+                .map(|kind| new_word_ids(&session_start(app.state(), kind)).len() as i64)
+        };
+        // with no words to play games with yet, a session teaches twice as many
+        assert_eq!(promised(app), [4, 6, 12, 0]);
+        assert_eq!(brought(app), promised(app));
+
+        let words = teachable(app);
+        let twenty: Vec<i64> = words[..20].iter().map(|w| w.word_id).collect();
+        insert_cards(app, &twenty, 1, 0);
+        assert_eq!(promised(app), [2, 3, 6, 0]);
+        assert_eq!(brought(app), promised(app));
+
+        // nearly everything learned: only what is left
+        let all_but_three: Vec<i64> = words[20..words.len() - 3].iter().map(|w| w.word_id).collect();
+        sql(app, "BEGIN");
+        insert_cards(app, &all_but_three, 2, i64::MAX);
+        sql(app, "COMMIT");
+        assert_eq!(promised(app), [2, 3, 3, 0]);
+        assert_eq!(brought(app), promised(app));
+        let last: Vec<i64> = words[words.len() - 3..].iter().map(|w| w.word_id).collect();
+        insert_cards(app, &last, 2, i64::MAX);
+        assert_eq!(promised(app), [0, 0, 0, 0]);
+        assert_eq!(brought(app), promised(app));
     });
 }
 
@@ -1063,9 +1164,11 @@ fn a_round_that_fails_at_its_last_write_is_undone_in_full() {
         // the session's row was made by an attempt that was rolled back; the
         // session must not go on updating a row that isn't there
         assert_eq!(profile_get(app.state()).xp, earned);
+        // one intro and one answer
         let summary = session_finish(app.state(), start.session_id);
-        assert_eq!((summary.rounds, summary.xp, summary.best_combo), (2, earned, 2));
+        assert_eq!((summary.rounds, summary.xp, summary.best_combo), (1, earned, 1));
         assert_eq!(summary.new_words, vec![word.lemma.clone()], "the intro was counted once per attempt");
+        assert!((summary.minutes - 2.0 / 60.0).abs() < 1e-9, "the failed attempts were timed too: {}", summary.minutes);
     });
 }
 
@@ -1260,4 +1363,701 @@ fn a_second_instance_cannot_take_the_lock() {
     assert!(lock_instance(&app_dir).unwrap().is_some());
     // a directory that can't hold a lock file doesn't stop Tilde from starting
     assert!(lock_instance(&app_dir.join("missing")).unwrap().is_none());
+}
+
+// --- what gets taught, and when ------------------------------------------------
+
+/// Does the placement quiz. `right` says which questions are answered
+/// correctly, by how common their word is (0 = the commonest). Returns the
+/// result and the questions' word ranks, commonest first.
+fn place(app: &tauri::App<MockRuntime>, right: impl Fn(usize) -> bool) -> (PlacementResult, Vec<i64>) {
+    let items = placement_start(app.state());
+    let rank_of = |word_id: i64| app.state::<AppState>().content.lock().unwrap().word(word_id).unwrap().rank;
+    let mut ranks: Vec<i64> = items.iter().map(|item| rank_of(item.word_id)).collect();
+    ranks.sort();
+    // answered in the order asked, which is shuffled
+    let answers = items
+        .iter()
+        .map(|item| {
+            let nth = ranks.iter().position(|r| *r == rank_of(item.word_id)).unwrap();
+            PlacementAnswer { word_id: item.word_id, correct: right(nth) }
+        })
+        .collect();
+    (placement_submit(app.state(), answers).unwrap(), ranks)
+}
+
+/// Which placement questions are answered right, by `place`'s numbering.
+type Right = fn(usize) -> bool;
+
+#[test]
+fn placement_leaves_no_teachable_word_between_known_and_new() {
+    let answer_sets: [Right; 4] = [|_| false, |nth| nth < 2, |nth| nth < 6, |_| true];
+    for right in answer_sets {
+        with_app(move |app| {
+            let (result, ranks) = place(app, right);
+            let words = teachable(app);
+            for w in words.iter().filter(|w| w.rank < result.frontier_rank) {
+                let state = card(app, w.word_id).map(|(_, state)| state);
+                assert_eq!(state, Some(2), "{} (rank {}) is below the cut at {} but not known", w.lemma, w.rank, result.frontier_rank);
+            }
+            let below = words.iter().filter(|w| w.rank < result.frontier_rank).count() as i64;
+            assert_eq!((result.words_marked_known, count(app, "cards")), (below, below), "{ranks:?}");
+
+            // new words start right where the known ones end
+            let next = words.iter().find(|w| w.rank >= result.frontier_rank).unwrap();
+            let start = session_start(app.state(), SessionKind::Standard);
+            let Round::NewWord { word, .. } = &start.rounds[0] else { panic!("first round is an intro") };
+            assert_eq!((word.lemma.as_str(), word.rank), (next.lemma.as_str(), next.rank), "cut at {}", result.frontier_rank);
+        });
+    }
+}
+
+#[test]
+fn a_guess_level_placement_marks_nothing() {
+    // nothing right, one question right (as likely a guess as not), and the
+    // quiz skipped altogether
+    let answer_sets: [Option<Right>; 4] = [Some(|_| false), Some(|nth| nth == 0), Some(|nth| nth == 7), None];
+    for right in answer_sets {
+        with_app(move |app| {
+            let result = match right {
+                Some(right) => place(app, right).0,
+                None => placement_submit(app.state(), vec![]).unwrap(),
+            };
+            assert_eq!((result.frontier_rank, result.words_marked_known, result.cefr_estimate.as_str()), (1, 0, "A1"));
+            assert_eq!(count(app, "cards"), 0);
+            assert!(placement_status(app.state()).is_some(), "the quiz would be offered again");
+            // so the first word taught is the commonest of all
+            let commonest = teachable(app).remove(0);
+            let start = session_start(app.state(), SessionKind::Standard);
+            assert_eq!(new_word_ids(&start).first(), Some(&commonest.word_id), "{}", commonest.lemma);
+        });
+    }
+}
+
+#[test]
+fn placement_credit_stops_at_the_second_miss() {
+    with_app(|app| {
+        // by rank: 1–3 right, 4 wrong, 5 right, 6 wrong, 7–10 right
+        let (result, ranks) = place(app, |nth| nth != 3 && nth != 5);
+        assert_eq!(ranks.len(), 10, "{ranks:?}");
+        // right answers count up to the 6th question (1, 2, 3 and 5), and the
+        // cut is the second-hardest of those
+        assert_eq!(result.frontier_rank, ranks[2]);
+        let below = teachable(app).iter().filter(|w| w.rank < ranks[2]).count() as i64;
+        assert!(below > 0);
+        assert_eq!(result.words_marked_known, below);
+        assert_eq!(count(app, "cards"), below);
+    });
+}
+
+#[test]
+fn placement_answers_are_taken_by_word_not_by_position() {
+    with_app(|app| {
+        let items = placement_start(app.state());
+        let rank_of = |word_id: i64| app.state::<AppState>().content.lock().unwrap().word(word_id).unwrap().rank;
+        let mut by_rank: Vec<i64> = items.iter().map(|item| item.word_id).collect();
+        by_rank.sort_by_key(|id| rank_of(*id));
+        let right = |nth: usize| PlacementAnswer { word_id: by_rank[nth], correct: true };
+        let wrong = |nth: usize| PlacementAnswer { word_id: by_rank[nth], correct: false };
+        // Sent hardest first; with an id that is no word; and with the
+        // easiest word answered twice, where the first answer is the one
+        // that counts.
+        let orphan = orphan_ids(app, 1)[0];
+        let answers = vec![right(3), PlacementAnswer { word_id: orphan, correct: true }, wrong(1), right(0), right(2), wrong(0)];
+        let result = placement_submit(app.state(), answers).unwrap();
+        // by rank: right, wrong, right, right. All three right answers
+        // count, and the cut is the second-hardest of them.
+        assert_eq!(result.frontier_rank, rank_of(by_rank[2]));
+    });
+}
+
+#[test]
+fn placement_runs_once_and_never_touches_met_words() {
+    with_app(|app| {
+        // the commonest word of all, so below any cut; the player has just met it
+        let met = teachable(app)[0].word_id;
+        user(app, |conn| deck::introduce(conn, met)).unwrap();
+        assert_eq!(card(app, met), Some((0.0, 1)));
+
+        let (first, _) = place(app, |_| true);
+        assert!(first.words_marked_known > 100);
+        assert_eq!(card(app, met), Some((0.0, 1)), "placement overwrote a card the player already had");
+        let cards = count(app, "cards");
+        assert_eq!(cards, first.words_marked_known + 1);
+
+        // asked again, with other answers: the first result stands
+        let (again, _) = place(app, |nth| nth < 3);
+        assert_eq!(
+            (again.frontier_rank, again.words_marked_known, again.cefr_estimate.as_str()),
+            (first.frontier_rank, first.words_marked_known, first.cefr_estimate.as_str())
+        );
+        assert_eq!(count(app, "cards"), cards);
+        assert_eq!(placement_status(app.state()).map(|p| p.frontier_rank), Some(first.frontier_rank));
+    });
+}
+
+#[test]
+fn placement_level_matches_home() {
+    // the last two: seven right in a row, and six right after two misses.
+    // By the number of right answers those look alike; by what they show
+    // the player knows, they are a B2 and a beginner
+    let answer_sets: [Right; 5] = [|_| true, |nth| nth < 4, |nth| nth < 2, |nth| nth < 7, |nth| nth >= 4];
+    for right in answer_sets {
+        with_app(move |app| {
+            let (result, _) = place(app, right);
+            let home = profile_get(app.state());
+            assert_eq!(result.cefr_estimate, home.cefr_estimate, "{} words known", home.words_known);
+            assert_eq!(result.words_marked_known, home.words_known);
+        });
+    }
+}
+
+#[test]
+fn placement_does_not_award_learning_badges() {
+    with_app(|app| {
+        let (result, _) = place(app, |_| true);
+        assert!(result.words_marked_known >= 1000, "{}", result.words_marked_known);
+        let start = session_start(app.state(), SessionKind::Standard);
+        answer(app, &start, first_quiz(&start), true);
+        let summary = session_finish(app.state(), start.session_id);
+        let learning: Vec<&str> = ids(&summary.new_badges).into_iter().filter(|id| id.starts_with("words-")).collect();
+        assert!(learning.is_empty(), "words the quiz took as known were counted as learned: {learning:?}");
+        assert!(earned(app).iter().all(|id| !id.starts_with("words-")));
+    });
+}
+
+#[test]
+fn learning_badges_count_answered_words() {
+    with_app(|app| {
+        let fifty: Vec<i64> = teachable(app)[..50].iter().map(|w| w.word_id).collect();
+        insert_cards(app, &fifty, 2, i64::MAX);
+        assert_eq!(profile_get(app.state()).words_known, 50);
+        // a session that answers nothing about them
+        let finish = |app: &tauri::App<MockRuntime>| {
+            let start = session_start(app.state(), SessionKind::Standard);
+            let intro = start.rounds.iter().position(|r| matches!(r, Round::NewWord { .. })).unwrap();
+            answer(app, &start, intro, true);
+            session_finish(app.state(), start.session_id)
+        };
+        // known, but never answered here (marked known, or taken as known by placement)
+        assert!(!ids(&finish(app).new_badges).contains(&"words-50"));
+
+        user(app, |conn| {
+            for id in &fifty[..49] {
+                conn.execute("INSERT INTO reviews(word_id, ts, grade) VALUES (?1, 0, 3)", [id]).unwrap();
+            }
+        });
+        assert!(!ids(&finish(app).new_badges).contains(&"words-50"), "49 words learned");
+        // several answers to one word are still one word
+        user(app, |conn| {
+            conn.execute("INSERT INTO reviews(word_id, ts, grade) VALUES (?1, 0, 3), (?1, 1, 3), (?2, 0, 3)", [fifty[0], fifty[49]])
+        })
+        .unwrap();
+        let badges = finish(app).new_badges;
+        assert!(ids(&badges).contains(&"words-50"), "{:?}", ids(&badges));
+        assert!(!ids(&badges).contains(&"words-200"));
+    });
+}
+
+#[test]
+fn marking_an_introduced_word_known_survives_a_correct_answer() {
+    with_app(|app| {
+        let word = teachable(app)[0].word_id;
+        user(app, |conn| deck::introduce(conn, word)).unwrap();
+        word_mark_known(app.state(), word).unwrap();
+        assert_eq!(profile_get(app.state()).words_known, 1);
+
+        user(app, |conn| deck::grade(conn, word, 3)).unwrap();
+        let (stability, state) = card(app, word).unwrap();
+        assert!(stability >= 120.0 && state == 2, "one right answer took a known word back to stability {stability}, state {state}");
+        assert_eq!(profile_get(app.state()).words_known, 1);
+    });
+}
+
+#[test]
+fn cards_broken_by_the_old_mark_known_are_respected() {
+    with_app(|app| {
+        let word = teachable(app)[0].word_id;
+        // what "mark as known" on an introduced word used to leave behind
+        user(app, |conn| {
+            conn.execute(
+                "INSERT INTO cards(word_id, stability, difficulty, due_ts, last_review_ts, reps, lapses, state)
+                 VALUES (?1, 120.0, 5.0, ?2, NULL, 0, 0, 2)",
+                rusqlite::params![word, deck::now() + 180.0 * 86400.0],
+            )
+        })
+        .unwrap();
+        user(app, |conn| deck::grade(conn, word, 3)).unwrap();
+        let (stability, _) = card(app, word).unwrap();
+        assert!(stability >= 120.0, "graded as if never seen: stability {stability}");
+        assert_eq!(profile_get(app.state()).words_known, 1);
+    });
+}
+
+#[test]
+fn marking_known_never_weakens_a_card() {
+    with_app(|app| {
+        let word = teachable(app)[0].word_id;
+        let due = deck::now() + 900.0 * 86400.0;
+        user(app, |conn| {
+            conn.execute(
+                "INSERT INTO cards(word_id, stability, difficulty, due_ts, last_review_ts, reps, lapses, state)
+                 VALUES (?1, 400.0, 2.5, ?2, 5, 9, 1, 2)",
+                rusqlite::params![word, due],
+            )
+        })
+        .unwrap();
+        word_mark_known(app.state(), word).unwrap();
+        let row: (f64, f64, f64, i64, i64) = user(app, |conn| {
+            conn.query_row("SELECT stability, difficulty, due_ts, reps, lapses FROM cards WHERE word_id = ?1", [word], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })
+        })
+        .unwrap();
+        assert_eq!(row, (400.0, 2.5, due, 9, 1));
+
+        // and a word only just introduced gets the whole of a known card
+        let fresh = teachable(app)[1].word_id;
+        user(app, |conn| deck::introduce(conn, fresh)).unwrap();
+        word_mark_known(app.state(), fresh).unwrap();
+        let row: (f64, f64, i64, bool) = user(app, |conn| {
+            conn.query_row(
+                "SELECT stability, difficulty, state, last_review_ts IS NOT NULL AND due_ts > ?2 FROM cards WHERE word_id = ?1",
+                rusqlite::params![fresh, deck::now() + 179.0 * 86400.0],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+        })
+        .unwrap();
+        assert_eq!(row, (120.0, 4.5, 2, true));
+    });
+}
+
+#[test]
+fn explore_and_home_agree_on_known() {
+    with_app(|app| {
+        let casa = word_search(app.state(), "casa".into(), 1)[0].word_id;
+        let in_explore = |app: &tauri::App<MockRuntime>| {
+            let hit = word_search(app.state(), "casa".into(), 1).remove(0);
+            assert_eq!(word_detail(app.state(), casa).unwrap().word.known, hit.known);
+            hit.known
+        };
+        // met, and answered right once: learning it, not known yet
+        user(app, |conn| deck::introduce(conn, casa).and_then(|()| deck::grade(conn, casa, 3))).unwrap();
+        assert_eq!(card(app, casa).map(|(_, state)| state), Some(2));
+        assert_eq!((in_explore(app), profile_get(app.state()).words_known), (false, 0));
+
+        word_mark_known(app.state(), casa).unwrap();
+        assert_eq!((in_explore(app), profile_get(app.state()).words_known), (true, 1));
+    });
+}
+
+#[test]
+fn a_beginner_session_quizzes_only_words_it_introduced() {
+    for (kind, intros, has_match) in [(SessionKind::Quick, 4, false), (SessionKind::Standard, 6, true), (SessionKind::Deep, 12, true)] {
+        with_app(move |app| {
+            let start = session_start(app.state(), kind);
+            let mut met = HashSet::new();
+            for (i, round) in start.rounds.iter().enumerate() {
+                if let Round::NewWord { word, .. } = round {
+                    met.insert(word.word_id);
+                    // its first quiz comes straight after
+                    assert_eq!(quizzed(&start.rounds[i + 1]), [word.word_id]);
+                }
+                for word_id in quizzed(round) {
+                    assert!(met.contains(&word_id), "{kind:?}: round {i} asks about a word never shown: {round:?}");
+                }
+            }
+            assert_eq!(met.len(), intros, "{kind:?}");
+            assert_eq!(start.rounds.iter().any(|r| matches!(r, Round::Match { .. })), has_match, "{kind:?}");
+            // every word introduced is played with at least once more
+            for word_id in &met {
+                let asked = start.rounds.iter().filter(|r| quizzed(r).contains(word_id)).count();
+                assert!(asked >= 2, "{kind:?}: word {word_id} asked {asked} time(s)");
+            }
+        });
+    }
+}
+
+#[test]
+fn sidecar_quizzes_only_words_already_met() {
+    with_app(|app| {
+        // no intro cards next to a film, so with no words yet there is nothing to ask
+        let empty = session_start(app.state(), SessionKind::Sidecar);
+        assert!(empty.rounds.is_empty());
+        // and the empty session finishes cleanly, earning nothing
+        assert!(session_finish(app.state(), empty.session_id).new_badges.is_empty());
+        assert_eq!(count(app, "events"), 0);
+
+        let five: Vec<i64> = teachable(app)[..5].iter().map(|w| w.word_id).collect();
+        user(app, |conn| five.iter().try_for_each(|id| deck::introduce(conn, *id))).unwrap();
+        let start = session_start(app.state(), SessionKind::Sidecar);
+        let mut asked: Vec<i64> = start.rounds.iter().flat_map(quizzed).collect();
+        asked.sort();
+        let mut expected = five.clone();
+        expected.sort();
+        assert_eq!(asked, expected, "{:?}", start.rounds);
+    });
+}
+
+#[test]
+fn an_intro_card_can_be_answered_i_already_know_it() {
+    with_app(|app| {
+        let start = session_start(app.state(), SessionKind::Standard);
+        let lemma = |i: usize| match &start.rounds[i] {
+            Round::NewWord { word, .. } => (word.word_id, word.lemma.clone()),
+            other => panic!("round {i} is not an intro: {other:?}"),
+        };
+        let (known_id, known_lemma) = lemma(0);
+        let (new_id, new_lemma) = lemma(2);
+        // "Ya me la sé" on the first card, "¡Lo tengo!" on the second
+        let feedback = submit(app, &start, 0, true, 1000, Some(4)).unwrap();
+        assert_eq!((feedback.xp_gained, feedback.combo), (0, 0));
+        submit(app, &start, 2, true, 1000, None).unwrap();
+        assert_eq!(card(app, known_id), Some((120.0, 2)));
+        assert_eq!(card(app, new_id), Some((0.0, 1)));
+        assert!(word_detail(app.state(), known_id).unwrap().word.known);
+
+        // its quiz still comes, and a right answer leaves it known
+        answer(app, &start, 1, true);
+        assert!(card(app, known_id).unwrap().0 >= 120.0);
+        let summary = session_finish(app.state(), start.session_id);
+        assert_eq!(summary.new_words, vec![new_lemma], "{known_lemma} was listed as a new word");
+        assert_eq!(profile_get(app.state()).words_known, 1);
+        // and it is not offered as new again
+        assert!(!new_word_ids(&session_start(app.state(), SessionKind::Standard)).contains(&known_id));
+    });
+}
+
+#[test]
+fn minutes_count_active_time_capped_per_round() {
+    with_app(|app| {
+        let start = session_start(app.state(), SessionKind::Standard);
+        // the window sat on one round for an hour; the next took a second
+        submit(app, &start, 0, true, 3_600_000, None).unwrap();
+        submit(app, &start, 1, true, 1000, None).unwrap();
+        // a clock that went backwards adds nothing, and takes nothing away
+        submit(app, &start, 2, true, -5000, None).unwrap();
+        // a second submit of an answered round isn't more time played
+        submit(app, &start, 1, true, 60_000, None).unwrap();
+        let duration_s = |app: &tauri::App<MockRuntime>| -> i64 {
+            user(app, |conn| conn.query_row("SELECT SUM(duration_s) FROM events", [], |r| r.get(0))).unwrap()
+        };
+        assert_eq!(duration_s(app), 121);
+
+        let summary = session_finish(app.state(), start.session_id);
+        assert_eq!(summary.minutes, 121.0 / 60.0);
+        assert_eq!(duration_s(app), 121);
+        assert_eq!(profile_get(app.state()).minutes_total, 2);
+    });
+}
+
+#[test]
+fn summary_and_home_count_the_same_seconds() {
+    with_app(|app| {
+        let start = session_start(app.state(), SessionKind::Standard);
+        for index in 0..5 {
+            submit(app, &start, index, true, 61_000, None).unwrap();
+        }
+        // 999 ms more is not another second, here or there
+        submit(app, &start, 5, true, 999, None).unwrap();
+        let summary = session_finish(app.state(), start.session_id);
+        assert_eq!(summary.minutes, 305.0 / 60.0);
+        assert_eq!(summary.minutes.floor() as i64, profile_get(app.state()).minutes_total);
+        assert_eq!(profile_get(app.state()).minutes_total, 5);
+    });
+}
+
+#[test]
+fn intro_cards_are_not_answers() {
+    with_app(|app| {
+        // every intro seen, every question missed
+        let start = session_start(app.state(), SessionKind::Standard);
+        let mut questions = 0;
+        for (i, round) in start.rounds.iter().enumerate() {
+            let intro = matches!(round, Round::NewWord { .. });
+            questions += i64::from(!intro);
+            assert_eq!(answer(app, &start, i, intro).combo, 0, "round {i}");
+        }
+        let summary = session_finish(app.state(), start.session_id);
+        assert_eq!((summary.rounds, summary.correct, summary.best_combo), (questions, 0, 0));
+        assert_eq!(summary.accuracy, 0.0);
+        assert_eq!(summary.new_words.len() as i64, start.rounds.len() as i64 - questions);
+    });
+    with_app(|app| {
+        // an intro between two right answers doesn't break the run, whatever
+        // the card reports
+        let start = session_start(app.state(), SessionKind::Quick);
+        let combos: Vec<i32> = (0..4).map(|i| answer(app, &start, i, i != 2).combo).collect();
+        assert_eq!(combos, [0, 1, 1, 2], "{:?}", &start.rounds[..4]);
+        // Four intros and their four questions, all right: four answers, and
+        // "a session without a single miss" asks for five.
+        for i in 4..8 {
+            answer(app, &start, i, true);
+        }
+        let summary = session_finish(app.state(), start.session_id);
+        assert_eq!((summary.rounds, summary.correct, summary.best_combo, summary.accuracy), (4, 4, 4, 1.0));
+        assert!(!ids(&summary.new_badges).contains(&"perfect-session"), "{:?}", ids(&summary.new_badges));
+    });
+}
+
+#[test]
+fn an_abandoned_session_is_dropped_when_a_new_one_starts() {
+    with_app(|app| {
+        let live = |app: &tauri::App<MockRuntime>| {
+            let mut ids: Vec<i64> = app.state::<AppState>().sessions.lock().unwrap().keys().copied().collect();
+            ids.sort();
+            ids
+        };
+        let abandoned = session_start(app.state(), SessionKind::Standard);
+        answer(app, &abandoned, 0, true);
+        // a long session still being played: started long ago, answered just now
+        let long = session_start(app.state(), SessionKind::Deep);
+        assert_eq!(live(app), [abandoned.session_id, long.session_id]);
+        app.state::<AppState>().sessions.lock().unwrap().get_mut(&abandoned.session_id).unwrap().last_active -= 7.0 * 3600.0;
+
+        let next = session_start(app.state(), SessionKind::Quick);
+        assert_eq!(live(app), [long.session_id, next.session_id]);
+        // what the abandoned one earned was saved as it went
+        assert_eq!(profile_get(app.state()).sessions_total, 1);
+        // answering it now is like answering any session that is gone
+        assert_eq!(answer(app, &abandoned, 1, true).xp_gained, 0);
+
+        // an answer keeps a session alive however long ago it started
+        app.state::<AppState>().sessions.lock().unwrap().get_mut(&long.session_id).unwrap().last_active -= 5.9 * 3600.0;
+        answer(app, &long, 0, true);
+        app.state::<AppState>().sessions.lock().unwrap().get_mut(&long.session_id).unwrap().last_active -= 5.9 * 3600.0;
+        let third = session_start(app.state(), SessionKind::Quick);
+        assert_eq!(live(app), [long.session_id, next.session_id, third.session_id]);
+    });
+}
+
+// --- the first-session badge ---------------------------------------------------
+
+#[test]
+fn placement_awards_no_badge() {
+    with_app(|app| {
+        place(app, |_| true);
+        assert!(earned(app).is_empty(), "{:?}", earned(app));
+    });
+}
+
+#[test]
+fn first_session_badge_comes_with_the_first_finished_session() {
+    with_app(|app| {
+        let start = session_start(app.state(), SessionKind::Quick);
+        // the first new word's card, then the first question about it
+        for index in 0..=first_quiz(&start) {
+            let feedback = answer(app, &start, index, true);
+            assert!(feedback.new_badges.is_empty(), "{:?}", ids(&feedback.new_badges));
+        }
+        assert!(earned(app).is_empty(), "awarded before the session was finished");
+        let summary = session_finish(app.state(), start.session_id);
+        assert_eq!(ids(&summary.new_badges), ["first-session"]);
+        assert_eq!(earned(app), ["first-session"]);
+
+        let second = session_start(app.state(), SessionKind::Quick);
+        for index in 0..=first_quiz(&second) {
+            answer(app, &second, index, true);
+        }
+        assert!(session_finish(app.state(), second.session_id).new_badges.is_empty());
+    });
+}
+
+#[test]
+fn finishing_an_untouched_session_awards_nothing_and_writes_no_backup() {
+    with_app(|app| {
+        let start = session_start(app.state(), SessionKind::Standard);
+        let summary = session_finish(app.state(), start.session_id);
+        assert!(summary.new_badges.is_empty(), "{:?}", ids(&summary.new_badges));
+        assert_eq!((summary.rounds, summary.xp, summary.minutes), (0, 0, 0.0));
+        assert!(earned(app).is_empty());
+        assert!(backup_folder(app.state()).backups.is_empty());
+        assert_eq!(profile_get(app.state()).sessions_total, 0);
+    });
+}
+
+#[test]
+fn intro_cards_alone_are_backed_up_but_are_not_a_session_finished() {
+    with_app(|app| {
+        // Every new word looked at and no question answered. The words are in
+        // the deck now, so there is something to back up...
+        let start = session_start(app.state(), SessionKind::Standard);
+        let intros: Vec<usize> = (0..start.rounds.len()).filter(|i| matches!(start.rounds[*i], Round::NewWord { .. })).collect();
+        assert!(!intros.is_empty());
+        for index in &intros {
+            answer(app, &start, *index, true);
+        }
+        let summary = session_finish(app.state(), start.session_id);
+        assert_eq!(count(app, "cards"), intros.len() as i64);
+        assert_eq!(backups_of_kind(app, "auto").len(), 1);
+        // ...but a summary of no rounds is not "Termina tu primera sesión"
+        assert_eq!(summary.rounds, 0);
+        assert!(summary.new_badges.is_empty(), "{:?}", ids(&summary.new_badges));
+        assert!(earned(app).is_empty());
+
+        // one answer makes it a session, right or wrong
+        let start = session_start(app.state(), SessionKind::Standard);
+        let quiz = first_quiz(&start);
+        for index in 0..quiz {
+            answer(app, &start, index, true);
+        }
+        answer(app, &start, quiz, false);
+        let summary = session_finish(app.state(), start.session_id);
+        assert_eq!((summary.rounds, summary.correct), (1, 0));
+        assert_eq!(ids(&summary.new_badges), ["first-session"]);
+    });
+}
+
+// --- cards whose word has left the dictionary ----------------------------------
+
+#[test]
+fn committed_content_matches_the_word_id_registry() {
+    // Progress is keyed by word id, and the registry is what keeps a word's
+    // id the same from one build of the dictionary to the next. A dictionary
+    // committed without its registry (or a registry edited by hand) would
+    // let the next build hand those ids to other words.
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../crates/tilde-pipeline/curation/word_ids.tsv");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let mut registered: HashMap<&str, i64> = HashMap::new();
+    let mut used = HashSet::new();
+    for line in text.lines().filter(|l| !l.is_empty() && !l.starts_with('#')) {
+        let (lemma, id) = line.split_once('\t').unwrap_or_else(|| panic!("no tab in {line:?}"));
+        let id: i64 = id.parse().unwrap_or_else(|_| panic!("bad id in {line:?}"));
+        assert!(registered.insert(lemma, id).is_none(), "{lemma} is registered twice");
+        assert!(used.insert(id), "id {id} is registered twice");
+    }
+    let content = ContentDb::open(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/resources/content.db"))).unwrap();
+    let mut stmt = content.conn.prepare("SELECT lemma, id FROM words").unwrap();
+    let words: Vec<(String, i64)> =
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+    assert!(!words.is_empty());
+    let mut wrong = words.iter().filter(|(lemma, id)| registered.get(lemma.as_str()) != Some(id));
+    // by id only: this is no place to print a word list
+    assert_eq!(wrong.next().map(|(_, id)| id), None, "a word's id in content.db is not its id in word_ids.tsv");
+}
+
+#[test]
+fn orphan_cards_do_not_take_review_slots() {
+    with_app(|app| {
+        // more of them than a review session has rounds, all due before the real one
+        insert_cards(app, &orphan_ids(app, 25), 2, 0);
+        let real = teachable(app)[0].word_id;
+        insert_cards(app, &[real], 2, 1);
+
+        let start = session_start(app.state(), SessionKind::ReviewOnly);
+        let asked: Vec<i64> = start.rounds.iter().flat_map(quizzed).collect();
+        assert_eq!(asked, [real]);
+        assert!(matches!(start.rounds[0], Round::ReviewCard { .. }));
+        // a mixed session's review cards, and the sidecar's words
+        for kind in [SessionKind::Standard, SessionKind::Sidecar] {
+            let start = session_start(app.state(), kind);
+            assert!(start.rounds.iter().flat_map(quizzed).any(|id| id == real), "{kind:?}");
+        }
+        assert_eq!(count(app, "cards"), 26, "the dormant cards are kept");
+    });
+}
+
+#[test]
+fn orphan_learning_cards_do_not_push_out_learning_words() {
+    with_app(|app| {
+        // more than a session looks at, all ahead of the real ones in due order
+        insert_cards(app, &orphan_ids(app, 60), 1, 0);
+        let real: Vec<i64> = teachable(app)[..2].iter().map(|w| w.word_id).collect();
+        user(app, |conn| real.iter().try_for_each(|id| deck::introduce(conn, *id))).unwrap();
+
+        let start = session_start(app.state(), SessionKind::Standard);
+        let new = new_word_ids(&start);
+        // the games, not the review cards (those come from the due list)
+        let games = start.rounds.iter().filter(|r| !matches!(r, Round::ReviewCard { .. }));
+        let played: HashSet<i64> = games.flat_map(quizzed).collect();
+        for id in &real {
+            assert!(played.contains(id), "a word in the deck got no game: {id}");
+        }
+        // the games are played with those and the session's new words, no others
+        let expected: HashSet<i64> = real.iter().chain(&new).copied().collect();
+        assert_eq!(played, expected);
+        // Two words in the deck are not sixty-two: there are still too few to
+        // fill the games, so the session brings extra new words, as Home says.
+        assert_eq!(new.len(), 6);
+        assert_eq!(profile_get(app.state()).new_words_by_kind.get("standard"), Some(&6));
+    });
+}
+
+#[test]
+fn orphan_cards_are_not_counted() {
+    with_app(|app| {
+        let real: Vec<i64> = teachable(app)[..3].iter().map(|w| w.word_id).collect();
+        insert_cards(app, &real, 2, 0);
+        let numbers = |app: &tauri::App<MockRuntime>| {
+            let p = profile_get(app.state());
+            (p.reviews_due, p.words_learning, p.words_known, p.cefr_estimate)
+        };
+        let before = numbers(app);
+        assert_eq!(before, (3, 3, 3, "A1".to_string()));
+
+        // enough to change the level estimate and earn a badge, were they counted
+        let orphans = orphan_ids(app, 130);
+        insert_cards(app, &orphans, 2, 0);
+        user(app, |conn| {
+            for id in &orphans {
+                conn.execute("INSERT INTO reviews(word_id, ts, grade) VALUES (?1, 0, 3)", [id]).unwrap();
+            }
+        });
+        assert_eq!(numbers(app), before);
+
+        let start = session_start(app.state(), SessionKind::Standard);
+        // a new word's card and the question that follows it
+        let intro = start.rounds.iter().position(|r| matches!(r, Round::NewWord { .. })).unwrap();
+        assert!(matches!(start.rounds[intro + 1], Round::Choice { .. }));
+        answer(app, &start, intro, true);
+        answer(app, &start, intro + 1, true);
+        let summary = session_finish(app.state(), start.session_id);
+        assert_eq!(ids(&summary.new_badges), ["first-session"]);
+        // the stats chart's count, saved with the session
+        let meta: String = user(app, |conn| conn.query_row("SELECT meta FROM events", [], |r| r.get(0))).unwrap();
+        assert_eq!(serde_json::from_str::<EventMeta>(&meta).unwrap().words_known, 3);
+        // and none was handed to placement as a word already met... nor lost
+        assert_eq!(user(app, deck::card_ids).len(), 3 + 130 + 1);
+    });
+}
+
+#[test]
+fn marking_an_unknown_word_known_does_nothing() {
+    with_app(|app| {
+        let orphans = orphan_ids(app, 2);
+        word_mark_known(app.state(), orphans[0]).unwrap();
+        assert_eq!(count(app, "cards"), 0, "a card was made for a word that doesn't exist");
+
+        // a dormant card isn't deleted by id either: its word may come back
+        insert_cards(app, &orphans[1..], 2, 0);
+        word_reset(app.state(), orphans[1]).unwrap();
+        assert_eq!(card(app, orphans[1]), Some((100.0, 2)));
+        assert!(word_detail(app.state(), orphans[1]).is_none());
+
+        // real words are marked and reset as ever
+        let real = teachable(app)[0].word_id;
+        word_mark_known(app.state(), real).unwrap();
+        assert_eq!(card(app, real), Some((120.0, 2)));
+        word_reset(app.state(), real).unwrap();
+        assert_eq!(card(app, real), None);
+    });
+}
+
+#[test]
+fn adding_a_sentence_skips_words_not_in_content() {
+    with_app(|app| {
+        let real = teachable(app)[0].word_id;
+        let orphan = orphan_ids(app, 1)[0];
+        user(app, |conn| {
+            conn.execute_batch(&format!(
+                "INSERT INTO mined(id, es, created_at) VALUES (7, 'Una frase de antes.', 0);
+                 INSERT INTO mined_words(mined_id, word_id) VALUES (7, {real}), (7, {orphan});"
+            ))
+        })
+        .unwrap();
+        sentence_add_to_deck(app.state(), 7).unwrap();
+        assert_eq!(card(app, real), Some((0.0, 1)));
+        assert_eq!(card(app, orphan), None, "a card was made for a word that doesn't exist");
+        assert!(sentences_list(app.state())[0].in_deck);
+    });
 }

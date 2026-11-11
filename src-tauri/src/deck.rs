@@ -2,8 +2,21 @@
 
 use fsrs::{FSRS, MemoryState, NextStates};
 use rusqlite::Connection;
+use std::collections::HashSet;
 
 pub const DESIRED_RETENTION: f32 = 0.9;
+
+/// A word the player knows, as a condition on `cards`: in review, and FSRS
+/// expects it to be remembered three weeks from now. One answer right is not
+/// that. Home, the level estimate, Explore and the stats all mean this.
+/// In parentheses, so it reads as one condition wherever it is put.
+pub const KNOWN: &str = "(state = 2 AND stability >= 21)";
+
+// Cards are keyed by word id, and a rebuilt dictionary can drop a word. Its
+// card stays in the database, untouched, and works again if the word returns;
+// meanwhile it must not take a review slot or count as a word the player has.
+// So what feeds sessions and numbers takes `live`, the ids the dictionary has
+// now (`ContentDb::word_ids`), and filters by it before any limit.
 
 pub fn now() -> f64 {
     std::time::SystemTime::now()
@@ -29,8 +42,11 @@ pub struct Card {
 }
 
 impl Card {
+    /// What FSRS has to go on. A card that was only introduced has no memory
+    /// yet. One marked as known has, though it was never answered: going by
+    /// `reps` here would schedule a known word as if it were brand new.
     fn memory_state(&self) -> Option<MemoryState> {
-        if self.reps == 0 {
+        if self.stability <= 0.0 {
             None
         } else {
             Some(MemoryState {
@@ -109,12 +125,20 @@ pub fn grade(conn: &Connection, word_id: i64, quality: i32) -> rusqlite::Result<
     Ok(())
 }
 
+/// Gives the word the memory of one known for months. On a card that is
+/// already there it only ever adds: a stronger memory or a later due date is
+/// kept, and so are the card's reps and lapses.
 pub fn mark_known(conn: &Connection, word_id: i64) -> rusqlite::Result<()> {
+    // the right-hand sides see the card as it was
     conn.execute(
         "INSERT INTO cards(word_id, stability, difficulty, due_ts, last_review_ts, reps, lapses, state)
          VALUES (?1, 120.0, 4.5, ?2, ?3, 3, 0, 2)
          ON CONFLICT(word_id) DO UPDATE SET
-           stability = 120.0, due_ts = excluded.due_ts, state = 2",
+           stability = MAX(stability, 120.0),
+           difficulty = CASE WHEN stability <= 0 THEN 4.5 ELSE difficulty END,
+           due_ts = MAX(due_ts, excluded.due_ts),
+           last_review_ts = excluded.last_review_ts,
+           state = 2",
         rusqlite::params![word_id, now() + 180.0 * 86400.0, now()],
     )?;
     Ok(())
@@ -155,55 +179,67 @@ pub fn load(conn: &Connection, word_id: i64) -> Option<Card> {
     .ok()
 }
 
-pub fn due_card_ids(conn: &Connection, limit: i64) -> Vec<i64> {
+/// The `limit` cards due soonest among those due now.
+pub fn due_card_ids(conn: &Connection, live: &HashSet<i64>, limit: usize) -> Vec<i64> {
     let mut stmt = conn
-        .prepare(
-            "SELECT word_id FROM cards WHERE due_ts <= ?1 AND state > 0
-             ORDER BY due_ts LIMIT ?2",
-        )
+        .prepare("SELECT word_id FROM cards WHERE due_ts <= ?1 AND state > 0 ORDER BY due_ts")
         .unwrap();
-    stmt.query_map(rusqlite::params![now(), limit], |r| r.get(0))
-        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+    stmt.query_map([now()], |r| r.get(0))
+        .map(|rows| rows.filter_map(|r| r.ok()).filter(|id| live.contains(id)).take(limit).collect())
         .unwrap_or_default()
 }
 
-pub fn learning_card_ids(conn: &Connection, limit: i64) -> Vec<i64> {
+/// The `limit` cards due soonest, due yet or not.
+pub fn learning_card_ids(conn: &Connection, live: &HashSet<i64>, limit: usize) -> Vec<i64> {
     let mut stmt = conn
-        .prepare(
-            "SELECT word_id FROM cards WHERE state > 0 ORDER BY due_ts LIMIT ?1",
-        )
+        .prepare("SELECT word_id FROM cards WHERE state > 0 ORDER BY due_ts")
         .unwrap();
-    stmt.query_map([limit], |r| r.get(0))
-        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+    stmt.query_map([], |r| r.get(0))
+        .map(|rows| rows.filter_map(|r| r.ok()).filter(|id| live.contains(id)).take(limit).collect())
         .unwrap_or_default()
 }
 
 /// Every word the player has a card for, whatever its state.
-pub fn card_ids(conn: &Connection) -> std::collections::HashSet<i64> {
+pub fn card_ids(conn: &Connection) -> HashSet<i64> {
     let mut stmt = conn.prepare("SELECT word_id FROM cards").unwrap();
     stmt.query_map([], |r| r.get(0))
         .map(|rows| rows.filter_map(|r| r.ok()).collect())
         .unwrap_or_default()
 }
 
-pub fn counts(conn: &Connection) -> (i64, i64, i64) {
-    let now_ts = now();
-    let due: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM cards WHERE due_ts <= ?1 AND state > 0",
-            [now_ts],
-            |r| r.get(0),
-        )
-        .unwrap_or(0);
-    let learning: i64 = conn
-        .query_row("SELECT COUNT(*) FROM cards WHERE state > 0", [], |r| r.get(0))
-        .unwrap_or(0);
-    let known: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM cards WHERE state = 2 AND stability >= 21",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap_or(0);
+/// (due now, in the deck, known), each a number of words.
+pub fn counts(conn: &Connection, live: &HashSet<i64>) -> (i64, i64, i64) {
+    let rows: Vec<(i64, bool, bool)> = conn
+        .prepare(&format!("SELECT word_id, due_ts <= ?1, {KNOWN} FROM cards WHERE state > 0"))
+        .and_then(|mut stmt| {
+            stmt.query_map([now()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect()
+        })
+        .unwrap_or_default();
+    let (mut due, mut learning, mut known) = (0, 0, 0);
+    for (_, is_due, is_known) in rows.into_iter().filter(|(id, _, _)| live.contains(id)) {
+        due += i64::from(is_due);
+        learning += 1;
+        known += i64::from(is_known);
+    }
     (due, learning, known)
+}
+
+pub fn is_known(conn: &Connection, word_id: i64) -> bool {
+    conn.query_row(&format!("SELECT {KNOWN} FROM cards WHERE word_id = ?1"), [word_id], |r| r.get(0))
+        .unwrap_or(false)
+}
+
+/// Known words the player has answered at least once in a round: what the
+/// "Aprende N palabras" badges count. Placement and "mark as known" assert
+/// that a word is known; they don't make it one the player learned here.
+pub fn learned_count(conn: &Connection, live: &HashSet<i64>) -> i64 {
+    // IN (SELECT ...) is looked up through a one-off index; `reviews` has
+    // none on word_id, and EXISTS would scan it once per card
+    let ids: Vec<i64> = conn
+        .prepare(&format!(
+            "SELECT word_id FROM cards WHERE {KNOWN} AND word_id IN (SELECT word_id FROM reviews)"
+        ))
+        .and_then(|mut stmt| stmt.query_map([], |r| r.get(0))?.collect())
+        .unwrap_or_default();
+    ids.iter().filter(|id| live.contains(id)).count() as i64
 }
