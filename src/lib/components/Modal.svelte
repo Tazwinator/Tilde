@@ -7,12 +7,15 @@
     onclose,
     children,
     danger = false,
+    returnFocus,
   }: {
     open: boolean;
     title: string;
     onclose: () => void;
     children: Snippet;
     danger?: boolean;
+    /** Where focus goes when the dialog closes, when that isn't where it came from. */
+    returnFocus?: () => HTMLElement | null | undefined;
   } = $props();
 
   let panel = $state<HTMLDivElement>();
@@ -36,13 +39,16 @@
   }
 
   // Focus starts on the first button, which is always the safe choice, and
-  // goes back where it was when the dialog closes.
+  // goes back where it was when the dialog closes. A page can name another
+  // place: after play's exit dialog the keys belong to the round again, not
+  // to the ✕ that opened it (Enter there would open the dialog once more).
   $effect(() => {
     if (!open || !panel) return;
     const before = document.activeElement;
     panel.querySelector("button")?.focus();
     return () => {
-      if (before instanceof HTMLElement && before.isConnected) before.focus();
+      const target = returnFocus ? returnFocus() : before;
+      if (target instanceof HTMLElement && target.isConnected) target.focus();
     };
   });
 </script>
@@ -58,7 +64,7 @@
       aria-label="Cerrar"
       onclick={onclose}
     ></button>
-    <div class="card anim-pop relative w-[min(92vw,26rem)] p-6" bind:this={panel}>
+    <div class="card anim-pop modal-panel relative w-[min(92vw,26rem)] p-6" bind:this={panel}>
       <h2 class="mb-4 text-2xl font-extrabold" class:text-coral-500={danger}>{title}</h2>
       {@render children()}
     </div>

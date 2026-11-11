@@ -3,6 +3,7 @@
   import type { Round } from "$lib/contract";
   import { glossText, posLabel } from "$lib/defs";
   import { playRoundAudio } from "$lib/audio";
+  import { activates } from "$lib/keys";
   import { sfx } from "$lib/sfx";
 
   type RoundT = Extract<Round, { type: "new_word" }>;
@@ -21,7 +22,24 @@
 
   // the round's audio is the word itself; hear it as the card appears
   onMount(() => playRoundAudio(round.audioBase64, round.word.lemma));
+
+  let answered = false;
+
+  function answer() {
+    if (answered) return;
+    answered = true;
+    sfx.pop();
+    onAnswered(true, null);
+  }
+
+  function onKey(e: KeyboardEvent) {
+    if (!activates(e)) return;
+    e.preventDefault();
+    answer();
+  }
 </script>
+
+<svelte:window onkeydown={onKey} />
 
 <div class="card anim-pop mx-auto max-w-xl p-8 text-center">
   <p class="text-lg font-bold uppercase tracking-widest text-tubo-500">✨ Palabra nueva</p>
@@ -51,11 +69,8 @@
 
   <button
     class="pressable mt-8 w-full rounded-3xl bg-gradient-to-r from-lime-500 to-emerald-500 py-4 text-2xl font-extrabold text-night-900 shadow-xl shadow-lime-500/30 hover:brightness-110"
-    onclick={() => {
-      sfx.pop();
-      onAnswered(true, null);
-    }}
+    onclick={answer}
   >
-    ¡Lo tengo! 💪
+    ¡Lo tengo! 💪 <span class="ml-1 text-base font-bold text-night-900/50" aria-hidden="true">Enter</span>
   </button>
 </div>

@@ -122,7 +122,7 @@
           <span class="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-slate-600 to-slate-800 text-3xl shadow-lg" aria-hidden="true">🍿</span>
           <span class="min-w-0 flex-1">
             <span class="block text-xl font-extrabold">Modo secundario</span>
-            <span class="block text-base text-white/60">Juega mientras ves una peli · ventana flotante, cero distracciones</span>
+            <span class="block text-base text-white/60">Juega mientras ves una peli · solo teclado, cero distracciones</span>
           </span>
           <span class="text-2xl text-white/30 transition-transform group-hover:translate-x-1" aria-hidden="true">→</span>
         </button>

@@ -58,7 +58,7 @@
     checked = ok;
     if (ok) sfx.correct(0);
     else sfx.wrong();
-    setTimeout(() => onAnswered(ok, round.answer), 900);
+    onAnswered(ok, round.answer);
   }
 
   function onKey(e: KeyboardEvent) {

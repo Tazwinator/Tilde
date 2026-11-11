@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import type { Round } from "$lib/contract";
   import { grade } from "$lib/grading";
   import { typingInto } from "$lib/keys";
@@ -17,6 +18,10 @@
   let typed = $state("");
   let checked = $state<null | boolean>(null);
   let accentSlip = $state(false);
+  let input = $state<HTMLInputElement>();
+
+  // a typing round is ready to be typed into
+  onMount(() => input?.focus());
 
   function submit(e: Event) {
     e.preventDefault();
@@ -28,7 +33,7 @@
     checked = ok;
     if (ok) sfx.correct(0);
     else sfx.wrong();
-    setTimeout(() => onAnswered(ok, round.answer), 900);
+    onAnswered(ok, round.answer);
   }
 
   function onKey(e: KeyboardEvent) {
@@ -59,6 +64,7 @@
 
   <form id="conj-form" onsubmit={submit}>
     <input
+      bind:this={input}
       type="text"
       bind:value={typed}
       disabled={checked !== null}

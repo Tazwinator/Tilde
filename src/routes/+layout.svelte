@@ -6,6 +6,7 @@
   import { onMount } from "svelte";
   import { sfx } from "$lib/sfx";
   import { failure, reportError } from "$lib/errors.svelte";
+  import { dismissToast, toasts } from "$lib/celebrate.svelte";
 
   let { children }: { children: Snippet } = $props();
 
@@ -43,7 +44,7 @@
 {#if isShellRoute}
   <div class="flex min-h-screen">
     <nav
-      class="fixed bottom-0 left-0 top-0 z-40 flex w-[72px] flex-col gap-2 border-r border-white/10 bg-white/[0.03] px-2.5 py-5 backdrop-blur md:w-60 md:px-4"
+      class="fixed bottom-0 left-0 top-0 z-40 flex w-[var(--nav-w)] flex-col gap-2 border-r border-white/10 bg-white/[0.03] px-2.5 py-5 backdrop-blur md:px-4"
       aria-label="Navegación principal"
     >
       <a
@@ -90,7 +91,7 @@
       </div>
     </nav>
 
-    <main class="ml-[72px] flex-1 md:ml-60">
+    <main class="ml-[var(--nav-w)] flex-1">
       {#key page.url.pathname}
         <div class="mx-auto max-w-4xl px-5 py-8 md:px-10" in:fly={{ y: 14, duration: 220 }} out:fade={{ duration: 100 }}>
           {@render children()}
@@ -101,6 +102,31 @@
 {:else}
   {@render children()}
 {/if}
+
+<!-- Badge toasts: above the page and the feedback pill, below dialogs and
+  the error toast. The region is always there so a screen reader hears what
+  is added to it; only the toasts themselves take clicks. -->
+<div
+  class="pointer-events-none fixed right-0 top-6 z-[60] flex flex-col items-center gap-2 px-4 {isShellRoute ? 'left-[var(--nav-w)]' : 'left-0'}"
+  role="status"
+  aria-live="polite"
+>
+  {#each toasts as t (t.id)}
+    <button
+      class="anim-pop pointer-events-auto rounded-2xl bg-night-800 text-left shadow-2xl"
+      title="Cerrar"
+      onclick={() => dismissToast(t.id)}
+    >
+      <span class="flex items-center gap-3 rounded-2xl border border-mango-500/50 bg-mango-500/10 px-6 py-3">
+        <span class="anim-sparkle text-3xl" aria-hidden="true">🏅</span>
+        <span>
+          <span class="block font-extrabold text-mango-500">{t.badge.name}</span>
+          <span class="block text-sm text-white/60">{t.badge.description}</span>
+        </span>
+      </span>
+    </button>
+  {/each}
+</div>
 
 {#if failure.message}
   <div

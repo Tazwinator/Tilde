@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import type { Round } from "$lib/contract";
   import { grade } from "$lib/grading";
   import { playRoundAudio } from "$lib/audio";
@@ -17,12 +18,19 @@
   let typed = $state("");
   let checked = $state<null | boolean>(null);
   let accentSlip = $state(false);
+  let input = $state<HTMLInputElement>();
 
   const lenientOk = $derived(checked !== null && checked);
 
   function play() {
     playRoundAudio(round.audioBase64, round.sentenceEs);
   }
+
+  // hear it and type, without reaching for the mouse first
+  onMount(() => {
+    input?.focus();
+    play();
+  });
 
   function submit(e: Event) {
     e.preventDefault();
@@ -34,23 +42,35 @@
     checked = ok;
     if (ok) sfx.correct(0);
     else sfx.wrong();
-    setTimeout(() => onAnswered(ok, round.answer), 900);
+    onAnswered(ok, round.answer);
+  }
+
+  function onKey(e: KeyboardEvent) {
+    // plain Space is a space in the box, so replaying takes Ctrl
+    if (e.code === "Space" && e.ctrlKey) {
+      e.preventDefault();
+      play();
+    }
   }
 </script>
 
+<svelte:window onkeydown={onKey} />
+
 <div class="mx-auto max-w-xl">
   <h1 class="mb-6 text-center text-3xl font-extrabold">Escucha y escribe ✍️</h1>
-  <div class="mb-6 flex justify-center">
+  <div class="mb-6 flex flex-col items-center gap-2">
     <button
       class="pressable flex h-20 w-20 items-center justify-center rounded-full bg-gradient-to-br from-tubo-500 to-grape-500 text-3xl shadow-xl shadow-tubo-500/30 hover:brightness-110"
-      aria-label="Reproducir audio"
+      aria-label="Reproducir audio de nuevo (Ctrl+Espacio)"
       onclick={play}
     >
       🔊
     </button>
+    <p class="text-sm text-white/40" aria-hidden="true">Ctrl+Espacio para oírlo otra vez</p>
   </div>
   <form onsubmit={submit}>
     <input
+      bind:this={input}
       type="text"
       bind:value={typed}
       disabled={checked !== null}

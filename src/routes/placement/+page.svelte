@@ -1,21 +1,20 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import { goto } from "$app/navigation";
   import { api } from "$lib/api";
   import { confettiCenter } from "$lib/confetti";
+  import { reportError } from "$lib/errors.svelte";
   import { sfx } from "$lib/sfx";
   import type { PlacementAnswer, PlacementItem, PlacementResult } from "$lib/contract";
 
-  const CHIPS = [
-    { id: "ayer", label: "Empecé ayer", emoji: "🌱" },
-    { id: "instituto", label: "Un poco de instituto", emoji: "🏫" },
-    { id: "intermedio", label: "Intermedio", emoji: "🚀" },
-  ];
+  // how long an answered question shows which option was right
+  const REVEAL_MS = 750;
 
   let items = $state<PlacementItem[]>([]);
   let idx = $state(0);
   let chosen = $state<number | null>(null);
-  let startChip = $state<string | null>(null);
-  let answers = $state<PlacementAnswer[]>([]);
+  // never shown, only sent: plain data
+  let answers: PlacementAnswer[] = [];
   let result = $state<PlacementResult | null>(null);
   let phase = $state<"intro" | "quiz" | "done">("intro");
 
@@ -34,26 +33,53 @@
     phase = "quiz";
   }
 
+  let revealTimer: ReturnType<typeof setTimeout> | undefined;
+  let left = false;
+
+  onDestroy(() => {
+    left = true;
+    clearTimeout(revealTimer);
+  });
+
   function pick(optionIdx: number) {
     if (chosen !== null) return;
     chosen = optionIdx;
     const item = items[idx];
     const correct = optionIdx === item.answerIndex;
-    answers.push({ wordId: item.wordId, correct });
     if (correct) sfx.correct(0);
     else sfx.wrong();
-    setTimeout(async () => {
-      chosen = null;
-      if (idx + 1 >= items.length) {
-        const res = await api.placementSubmit(answers, startChip ?? undefined);
+    const given = [...answers, { wordId: item.wordId, correct }];
+    const reveal = new Promise<void>((resolve) => {
+      revealTimer = setTimeout(resolve, REVEAL_MS);
+    });
+    if (idx + 1 < items.length) {
+      answers = given;
+      void reveal.then(() => {
+        chosen = null;
+        idx += 1;
+      });
+      return;
+    }
+    // The last answer goes out at once, alongside the reveal: the result is
+    // saved even if the player leaves before the reveal is over.
+    void Promise.all([api.placementSubmit(given), reveal]).then(
+      ([res]) => {
+        if (left) return;
+        answers = given;
         result = res;
         phase = "done";
         confettiCenter(120);
         sfx.fanfare();
-      } else {
-        idx += 1;
-      }
-    }, 750);
+      },
+      (e) => {
+        // said even after leaving (the error toast outlives the page): the
+        // player must know that the placement was not saved
+        reportError(e);
+        if (left) return;
+        // back to the last question, unanswered, so it can be given again
+        chosen = null;
+      },
+    );
   }
 
   function onKey(e: KeyboardEvent) {
@@ -72,24 +98,8 @@
       <div class="anim-float mb-4 text-7xl" aria-hidden="true">🎯</div>
       <h1 class="text-4xl font-extrabold">Vamos a ver qué ya sabes</h1>
       <p class="mx-auto mt-3 max-w-md text-lg text-white/70">
-        12 preguntitas rápidas. Si no sabes una, ¡no pasa nada! Solo es para calibrar tu punto de partida.
+        Unas preguntitas rápidas. Si no sabes una, ¡no pasa nada! Solo es para calibrar tu punto de partida.
       </p>
-      <h2 class="mt-8 text-lg font-bold text-white/80">¿Cómo llevas el español?</h2>
-      <div class="mt-3 flex flex-wrap justify-center gap-3">
-        {#each CHIPS as c (c.id)}
-          <button
-            class="pressable rounded-full border px-5 py-2.5 text-lg font-bold transition-colors
-              {startChip === c.id
-              ? 'border-grape-400 bg-grape-500/30 text-white'
-              : 'border-white/15 bg-white/5 text-white/70 hover:bg-white/10'}"
-            class:ring-2={startChip === c.id}
-            class:ring-grape-400={startChip === c.id}
-            onclick={() => (startChip = startChip === c.id ? null : c.id)}
-          >
-            <span aria-hidden="true">{c.emoji}</span> {c.label}
-          </button>
-        {/each}
-      </div>
       <button
         class="pressable mt-8 rounded-3xl bg-gradient-to-r from-grape-500 to-fuchsia-500 px-10 py-4 text-2xl font-extrabold shadow-xl shadow-grape-500/40 hover:brightness-110"
         onclick={begin}

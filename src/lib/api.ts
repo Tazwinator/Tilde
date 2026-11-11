@@ -66,8 +66,8 @@ export const api = {
     return invoke<PlacementItem[]>("placement_start");
   },
 
-  async placementSubmit(answers: PlacementAnswer[], _startBand?: string): Promise<PlacementResult> {
-    return invoke<PlacementResult>("placement_submit", { answers, startBand: _startBand ?? null });
+  async placementSubmit(answers: PlacementAnswer[]): Promise<PlacementResult> {
+    return invoke<PlacementResult>("placement_submit", { answers });
   },
 
   async searchWords(query: string, limit = 50): Promise<WordHit[]> {
@@ -84,6 +84,12 @@ export const api = {
 
   async resetWord(wordId: number): Promise<void> {
     return invoke<void>("word_reset", { wordId });
+  },
+
+  /** The spoken text as a base64 wav, or null with no speech engine. Playing
+   * it is the caller's business (see audio.ts, which can also stop it). */
+  async ttsAudio(text: string): Promise<string | null> {
+    return invoke<string | null>("tts_speak", { text });
   },
 
   async speak(text: string): Promise<void> {

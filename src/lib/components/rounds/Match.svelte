@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import type { Round } from "$lib/contract";
   import { textSize } from "$lib/defs";
   import { sfx } from "$lib/sfx";
@@ -37,6 +38,9 @@
   // Spanish words the player tried to pair wrongly; only these are graded as missed.
   let missed = new Set<number>();
   let done = $state(false);
+  let shakeTimer: ReturnType<typeof setTimeout> | undefined;
+
+  onDestroy(() => clearTimeout(shakeTimer));
 
   function clickEs(t: Tile) {
     if (done || matched.includes(t.wordId)) return;
@@ -52,14 +56,16 @@
       sfx.correct(matched.length);
       if (matched.length === round.pairs.length) {
         done = true;
-        setTimeout(() => onAnswered(wrongAttempts <= 1, null, undefined, [...missed]), 600);
+        onAnswered(wrongAttempts <= 1, null, undefined, [...missed]);
       }
     } else {
       wrongAttempts += 1;
       missed.add(selectedEs);
       wrongShake = t.wordId;
       sfx.wrong();
-      setTimeout(() => (wrongShake = null), 450);
+      // a second slip within the shake must not be cut short by the first one's timer
+      clearTimeout(shakeTimer);
+      shakeTimer = setTimeout(() => (wrongShake = null), 450);
       selectedEs = null;
     }
   }

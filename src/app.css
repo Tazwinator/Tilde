@@ -17,6 +17,14 @@
 
 html {
   color-scheme: dark;
+  /* The width of the side nav. The nav, the page beside it and everything
+     centred on the page (feedback pill, badge toasts) all read it here. */
+  --nav-w: 72px;
+}
+@media (width >= theme(--breakpoint-md)) {
+  html {
+    --nav-w: 240px;
+  }
 }
 
 body {
@@ -119,6 +127,13 @@ body {
   outline: 3px solid rgba(167, 139, 250, 0.85);
   outline-offset: 2px;
   border-radius: 0.6rem;
+}
+/* In a dialog focus is moved by script (to its first button, and round the
+   Tab trap), and WebKit shows no :focus-visible ring for that after a mouse
+   click. The ring must always show there: it marks what Enter will do. */
+.modal-panel :focus {
+  outline: 3px solid rgba(167, 139, 250, 0.85);
+  outline-offset: 2px;
 }
 
 * {

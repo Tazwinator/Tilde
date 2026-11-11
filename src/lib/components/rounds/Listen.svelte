@@ -29,7 +29,7 @@
     const correct = i === round.answerIndex;
     if (correct) sfx.correct(0);
     else sfx.wrong();
-    setTimeout(() => onAnswered(correct, answerText), 700);
+    onAnswered(correct, answerText);
   }
 
   function onKey(e: KeyboardEvent) {

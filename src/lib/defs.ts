@@ -45,3 +45,11 @@ export function textSize(text: string, normal = "text-2xl"): string {
   if (text.length > 28) return "text-lg";
   return normal;
 }
+
+/**
+ * Size and shape of the feedback pill, by the same lengths as textSize():
+ * a short cheer is a big round pill, a sentence wraps in a rounded box.
+ */
+export function pillShape(text: string): string {
+  return `${textSize(text)} ${text.length > 28 ? "rounded-3xl" : "rounded-full"}`;
+}
