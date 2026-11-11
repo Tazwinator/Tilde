@@ -1,0 +1,16 @@
+# Reviewed Spanish definitions (words.gloss_es) of the commonest words.
+# For any other word the pipeline takes Wikcionario's first current
+# Peninsular sense (src/definiciones.rs), which is often not the everyday
+# meaning ("coche": a horse carriage), and Wikcionario changes every week.
+# Every word of the reviewed range has a row, so a new Wikcionario download
+# can't change them.
+#
+# lemma<TAB>definition, one word per line, in rank order at the time of the
+# review. The definition is shown exactly as written here: no full stop at
+# the end, at most 101 characters, no wiki markup, and never the word it
+# defines (it is the prompt of rounds whose answer is that word).
+# "-" as the definition means the word gets no Spanish definition; the app
+# then shows its English gloss.
+#
+# Definitions copied from Wikcionario (es.wiktionary.org) contributors via
+# kaikki.org, CC BY-SA 4.0; this file is shared under CC BY-SA 4.0.

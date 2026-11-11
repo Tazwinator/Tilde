@@ -132,11 +132,15 @@ fn main() {
         .iter()
         .map(|w| (w.lemma.clone(), w.pos.clone()))
         .collect();
-    let mut definitions = definiciones::spanish_definitions(gz(&wikcionario_path), &wanted);
+    let curated = definiciones::curated(include_str!("../curation/definiciones.tsv"));
+    let mut definitions =
+        definiciones::spanish_definitions(gz(&wikcionario_path), &wanted, &curated);
     for w in &mut words {
         w.gloss_es = definitions.remove(&w.lemma);
     }
     let defined = words.iter().filter(|w| w.gloss_es.is_some()).count();
+    // rows for words that have left the list
+    let unused = definiciones::unused(&curated, &wanted);
     let verbs = words.iter().filter(|w| !w.conjugations.is_empty()).count();
     let latam: Vec<&str> = words
         .iter()
@@ -152,6 +156,11 @@ fn main() {
         "  words: {}  verbs with tables: {verbs}  Spanish definitions: {defined}",
         words.len()
     );
+    println!("  unused curated definitions: {}", unused.len());
+    // every one of them: each is a row to take out of the file
+    for row in unused.chunks(10) {
+        println!("    {}", row.join(" "));
+    }
     println!(
         "  top 40: {}",
         words
