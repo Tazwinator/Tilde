@@ -221,16 +221,25 @@ Without either engine, rounds simply carry no audio.
    BOM, then strict UTF-8, then windows-1252, which old Spanish `.srt` files
    often use.
 2. **Parse.** `tilde_core::srt::parse_subtitles` reads SRT, WebVTT or plain
-   text. It drops tags and sound descriptions, and splits a cue into one
-   line per speaker turn (a leading dash).
+   text. It normalises the text to NFC first, so a decomposed file (as
+   macOS tools write them) reads like any other. It drops tags and sound
+   descriptions, and splits a cue into one line per speaker turn (a leading
+   dash).
 3. **Make sentences.** `lines_to_sentences` joins lines into sentences and
-   splits a line that holds more than one. Sentences under three or over
+   splits a line that holds more than one. A sentence that trails off with
+   "..." and is picked up by the next subtitle stays whole, and dots that
+   only mark the continuation are dropped. Sentences under three or over
    forty words are dropped.
-4. **Match words.** Each sentence is matched against the `FormIndex`. One
-   with fewer than 35% of its words in the dictionary is skipped.
+4. **Match words.** Each sentence is matched against the `FormIndex`.
+   Stopwords don't count. A spelling the dictionary knows is judged as
+   written, so "está", "sé" and "té" are words while "esta", "se" and "te"
+   are stopwords. A sentence with nothing to learn in it (only stopwords or
+   numbers), or with fewer than 35% of its words in the dictionary, is
+   skipped.
 5. **Store.** A sentence already mined is skipped, even from another file
-   or with other punctuation (`srt::sentence_key`). The rest go into
-   `mined` and `mined_words`.
+   or with other punctuation: `srt::sentence_key` compares its words and
+   numbers, lowercased and without accents. The rest go into `mined` and
+   `mined_words`.
 
 `sentence_add_to_deck` gives each word in a sentence a card.
 

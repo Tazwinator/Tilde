@@ -359,6 +359,10 @@ impl tilde_core::srt::WordMatcher for FormIndex {
             .cloned()
             .unwrap_or_default()
     }
+
+    fn knows(&self, form: &str) -> bool {
+        self.exact.contains_key(form)
+    }
 }
 
 /// Adds `word_id` under `form`, keeping only lemma matches once there is one.

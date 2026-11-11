@@ -7,3 +7,4 @@ license.workspace = true
 [dependencies]
 serde = { workspace = true }
 regex = { workspace = true }
+icu_normalizer = { version = "2.3", default-features = false, features = ["compiled_data"] }

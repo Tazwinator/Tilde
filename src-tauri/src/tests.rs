@@ -229,6 +229,93 @@ fn a_sentence_from_another_file_is_not_mined_twice() {
     assert_eq!(listed[0].es, "¿Dónde está la casa de tu madre?");
 }
 
+/// Imports `text` as a subtitle file called `title`.
+fn mine(app: &tauri::App<MockRuntime>, title: &str, text: &str) -> ImportReport {
+    srt_import(app.state(), title.into(), text.into()).unwrap()
+}
+
+/// Whether a mined sentence is linked to the word with exactly this lemma.
+fn mined_word(app: &tauri::App<MockRuntime>, lemma: &str) -> bool {
+    // the search also looks inside glosses and longer lemmas: "té" finds
+    // "saltar" (to sauté) first
+    let word_id = word_search(app.state(), lemma.into(), 20)
+        .into_iter()
+        .find(|w| w.lemma == lemma)
+        .unwrap_or_else(|| panic!("no word {lemma}"))
+        .word_id;
+    let state = app.state::<AppState>();
+    let conn = state.user.lock().unwrap();
+    conn.query_row("SELECT EXISTS(SELECT 1 FROM mined_words WHERE word_id = ?1)", [word_id], |r| r.get(0))
+        .unwrap()
+}
+
+#[test]
+fn subtitle_mining_credits_estar_saber_and_te() {
+    let srt = "1\n00:00:01,000 --> 00:00:04,000\nMi madre está en casa y no sé si quiere té.\n";
+    with_app(move |app| {
+        mine(app, "test.srt", srt);
+        // "está", "sé" and "té" are not the stopwords "esta", "se" and "te"
+        for lemma in ["estar", "saber", "té"] {
+            assert!(mined_word(app, lemma), "{lemma} not linked");
+        }
+    });
+}
+
+#[test]
+fn an_ellipsis_split_sentence_is_mined_whole() {
+    let srt = "1\n00:00:01,000 --> 00:00:03,000\nSi me hubieras dicho la verdad...\n\n\
+               2\n00:00:03,500 --> 00:00:05,000\n...no estaríamos aquí ahora.\n";
+    let listed = with_app(move |app| {
+        mine(app, "test.srt", srt);
+        sentences_list(app.state())
+    });
+    let texts: Vec<&str> = listed.iter().map(|s| s.es.as_str()).collect();
+    assert_eq!(texts, ["Si me hubieras dicho la verdad... no estaríamos aquí ahora."]);
+}
+
+#[test]
+fn sentences_that_differ_in_a_number_are_both_mined() {
+    let first = "1\n00:00:01,000 --> 00:00:03,000\nTengo 30 años y dos hijos.\n";
+    let second = "1\n00:00:01,000 --> 00:00:03,000\nTengo 40 años y dos hijos.\n";
+    let (added, again) = with_app(move |app| {
+        mine(app, "uno.srt", first);
+        let added = mine(app, "dos.srt", second).sentences_added;
+        (added, mine(app, "dos.srt", second).sentences_added)
+    });
+    assert_eq!((added, again), (1, 0));
+}
+
+#[test]
+fn lines_with_nothing_to_learn_are_not_mined() {
+    let srt = "1\n00:00:01,000 --> 00:00:03,000\n1, 2, 3.\n\n\
+               2\n00:00:04,000 --> 00:00:06,000\nSí, sí, ya voy.\n";
+    let report = with_app(move |app| mine(app, "test.srt", srt));
+    assert_eq!((report.sentences_found, report.sentences_added), (2, 0), "{report:?}");
+}
+
+#[test]
+fn a_decomposed_subtitle_file_is_stored_composed() {
+    // as macOS tools write it: "a" + U+0301 for "á"
+    let srt = "1\n00:00:01,000 --> 00:00:03,000\nMi madre esta\u{301} en casa.\n";
+    with_app(move |app| {
+        mine(app, "test.srt", srt);
+        assert_eq!(sentences_list(app.state())[0].es, "Mi madre est\u{e1} en casa.");
+        assert!(mined_word(app, "estar"), "estar not linked");
+
+        // a sentence an older version stored decomposed is still recognised
+        app.state::<AppState>()
+            .user
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO mined(es, source, created_at) VALUES ('Man\u{303}ana no quiero ir a la escuela.', 'vieja.srt', 0)",
+                [],
+            )
+            .unwrap();
+        assert_eq!(mine(app, "otra.srt", "Ma\u{f1}ana no quiero ir a la escuela.").sentences_added, 0);
+    });
+}
+
 fn count(app: &tauri::App<MockRuntime>, table: &str) -> i64 {
     let state = app.state::<AppState>();
     let conn = state.user.lock().unwrap();
