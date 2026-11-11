@@ -1,6 +1,6 @@
 //! Session generation, scoring and gamification.
 
-use crate::content::ContentDb;
+use crate::content::{gloss_parts, ContentDb};
 use crate::deck;
 use crate::tts::Tts;
 use rusqlite::Connection;
@@ -164,15 +164,115 @@ where
     shuffle(v.to_vec()).into_iter().take(n).collect()
 }
 
-fn gloss_of(w: &WordCard, definition_lang: &str) -> String {
-    if definition_lang == "es" {
-        w.gloss_es
-            .clone()
-            .or_else(|| w.gloss_en.clone())
-            .unwrap_or_else(|| w.lemma.clone())
+/// The language a round about `w` shows meanings in. Spanish only if the
+/// word has a Spanish definition; otherwise the whole round is in English.
+/// A round never mixes the two: the one English gloss among Spanish
+/// definitions is the answer, or is plainly not.
+fn meaning_lang(w: &WordCard, definition_lang: &str) -> &'static str {
+    if definition_lang == "es" && w.gloss_es.is_some() {
+        "es"
     } else {
-        w.gloss_en.clone().unwrap_or_else(|| w.lemma.clone())
+        "en"
     }
+}
+
+/// The word's meaning in the round's language (see `meaning_lang`).
+fn gloss_in(w: &WordCard, lang: &str) -> String {
+    let gloss = if lang == "es" { &w.gloss_es } else { &w.gloss_en };
+    gloss.clone().unwrap_or_else(|| w.lemma.clone())
+}
+
+/// The word's meaning where it is shown on its own: in Spanish if the player
+/// asked for that and there is a definition, else in English.
+fn gloss_of(w: &WordCard, definition_lang: &str) -> String {
+    gloss_in(w, meaning_lang(w, definition_lang))
+}
+
+/// What the option buttons of a multiple-choice round show, and how the
+/// player gets the word they are asked about.
+#[derive(Clone, Copy, PartialEq)]
+enum Shown {
+    /// Meanings, for a word the player reads.
+    Meaning,
+    /// Words, for a meaning the player reads.
+    Word,
+    /// Words, for a word the player only hears.
+    Heard,
+    /// Meanings, for a word the player only hears (sidecar).
+    HeardMeaning,
+}
+
+/// How a word sounds, near enough: accents, a silent "h", "b"/"v" and
+/// "ll"/"y" make no difference to the ear, so "sí" and "si", "hola" and
+/// "ola", "valla" and "vaya" can't be told apart in a round that is only
+/// heard. "ñ" is a sound of its own.
+fn sound_key(word: &str) -> String {
+    let mut key = String::new();
+    let mut before = None;
+    for c in tilde_core::srt::strip_accents(&word.to_lowercase()).chars() {
+        match c {
+            'h' if before != Some('c') => {}
+            'v' => key.push('b'),
+            c => key.push(c),
+        }
+        before = Some(c);
+    }
+    key.replace("ll", "y")
+}
+
+/// The options of a multiple-choice round about `w`, shuffled, and where the
+/// right one is. Every round with options gets them here, so that all keep
+/// the same promises: four options (wrong answers come from other word
+/// classes when the word's own runs out), no two that read the same, and
+/// none that is right as well:
+/// - no wrong answer shares a meaning with the word (`distractor_candidates`);
+/// - meanings are all in one language, and where a Spanish definition is
+///   shown, no word is offered that it defines too;
+/// - for a word that is only heard, nothing that sounds like it, or like
+///   another option.
+fn options_for(content: &ContentDb, w: &WordCard, shown: Shown, definition_lang: &str) -> (Vec<String>, i32) {
+    options_from(w, content.distractor_candidates(w, 40), shown, definition_lang)
+}
+
+/// `options_for`, given the words to pick the wrong answers from, best first.
+fn options_from(w: &WordCard, candidates: Vec<WordCard>, shown: Shown, definition_lang: &str) -> (Vec<String>, i32) {
+    let lang = meaning_lang(w, definition_lang);
+    let meanings = matches!(shown, Shown::Meaning | Shown::HeardMeaning);
+    let heard = matches!(shown, Shown::Heard | Shown::HeardMeaning);
+    // the Spanish definition, when the round shows it: on the buttons, or as
+    // the prompt the words are picked for
+    let definition = (lang == "es" && shown != Shown::Heard).then(|| gloss_parts(w.gloss_es.as_deref()));
+    let text = |word: &WordCard| if meanings { gloss_in(word, lang) } else { word.lemma.clone() };
+    let reads = |text: &str| text.trim().to_lowercase();
+
+    let answer = text(w);
+    let mut options = vec![answer.clone()];
+    let mut read: HashSet<String> = HashSet::from([reads(&answer)]);
+    let mut sounds: HashSet<String> = HashSet::from([sound_key(&w.lemma)]);
+    for d in candidates {
+        if options.len() == 4 {
+            break;
+        }
+        if let Some(definition) = &definition {
+            if meanings && d.gloss_es.is_none() {
+                continue;
+            }
+            if !gloss_parts(d.gloss_es.as_deref()).is_disjoint(definition) {
+                continue;
+            }
+        }
+        let option = text(&d);
+        if read.contains(&reads(&option)) || (heard && sounds.contains(&sound_key(&d.lemma))) {
+            continue;
+        }
+        read.insert(reads(&option));
+        sounds.insert(sound_key(&d.lemma));
+        options.push(option);
+    }
+    let options = shuffle(options);
+    // exact, since no two options read the same
+    let answer_index = options.iter().position(|o| *o == answer).unwrap_or(0) as i32;
+    (options, answer_index)
 }
 
 struct GenCtx<'a> {
@@ -314,32 +414,26 @@ fn gen_sidecar(ctx: &mut GenCtx, n: usize) -> (Vec<Round>, Vec<&'static str>) {
                 continue;
             }
         }
-        let gloss = gloss_of(w, &ctx.definition_lang);
-        let distractors = ctx.content.similar_words(w, 8);
-        let mut options = vec![gloss.clone()];
-        for d in distractors.iter().take(3) {
-            options.push(gloss_of(d, &ctx.definition_lang));
-        }
-        let opts = shuffle(options);
-        let answer_index = opts.iter().position(|o| *o == gloss).unwrap_or(0) as i32;
         // a round that shows no word needs a voice to say it
         if i % 3 == 2 && ctx.tts.available() {
+            let (options, answer_index) = options_for(ctx.content, w, Shown::HeardMeaning, &ctx.definition_lang);
             rounds.push(Round::Listen {
                 id,
                 word_id: w.word_id,
                 es: w.lemma.clone(),
                 audio_base64: ctx.audio(&w.lemma),
-                options: opts,
+                options,
                 answer_index,
             });
             types.push("listen");
         } else {
+            let (options, answer_index) = options_for(ctx.content, w, Shown::Meaning, &ctx.definition_lang);
             rounds.push(Round::Choice {
                 id,
                 word_id: w.word_id,
                 prompt: w.lemma.clone(),
                 prompt_lang: "es".into(),
-                options: opts,
+                options,
                 answer_index,
                 audio_base64: ctx.audio(&w.lemma),
             });
@@ -457,18 +551,17 @@ fn gen_mixed(ctx: &mut GenCtx, kind: SessionKind) -> (Vec<Round>, Vec<&'static s
                 types.push(ty);
             }
             2 => {
-                if let Some((sid, es, en)) = usable.first() {
-                    ctx.used_sentences.insert(*sid);
+                let build = usable
+                    .iter()
+                    .find_map(|(sid, es, en)| build_tiles(es).map(|tiles| (*sid, es, en, tiles)));
+                if let Some((sid, es, en, tiles)) = build {
+                    ctx.used_sentences.insert(sid);
                     rounds.push(Round::Build {
                         id: rid,
                         word_id: w.word_id,
                         sentence_es: es.clone(),
                         sentence_en: en.clone().unwrap_or_default(),
-                        tiles: shuffle(
-                            es.split_whitespace()
-                                .map(|s| s.to_string())
-                                .collect::<Vec<_>>(),
-                        ),
+                        tiles,
                         answer: es.clone(),
                     });
                     types.push("build");
@@ -497,24 +590,20 @@ fn gen_mixed(ctx: &mut GenCtx, kind: SessionKind) -> (Vec<Round>, Vec<&'static s
     }
 
     // match rounds (one or two)
-    if game_pool.len() >= 4 {
-        for chunk in pick(&game_pool, (n_games / 6).min(2) * 4).chunks(4) {
-            if chunk.len() == 4 {
-                rounds.push(Round::Match {
-                    id: rid,
-                    pairs: chunk
-                        .iter()
-                        .map(|w| MatchPair {
-                            word_id: w.word_id,
-                            es: w.lemma.clone(),
-                            en: gloss_of(w, &ctx.definition_lang),
-                        })
-                        .collect(),
-                });
-                types.push("match");
-                rid += 1;
-            }
-        }
+    for chunk in match_chunks(&game_pool, &ctx.definition_lang, (n_games / 6).min(2)) {
+        rounds.push(Round::Match {
+            id: rid,
+            pairs: chunk
+                .iter()
+                .map(|w| MatchPair {
+                    word_id: w.word_id,
+                    es: w.lemma.clone(),
+                    en: gloss_in(w, &ctx.definition_lang),
+                })
+                .collect(),
+        });
+        types.push("match");
+        rid += 1;
     }
 
     // review cards
@@ -553,50 +642,25 @@ fn gen_mixed(ctx: &mut GenCtx, kind: SessionKind) -> (Vec<Round>, Vec<&'static s
 }
 
 fn choice_round(ctx: &mut GenCtx, id: i64, w: &WordCard) -> (Round, &'static str) {
-    let en_to_es = id % 2 == 1;
-    let gloss = gloss_of(w, &ctx.definition_lang);
-    let _ = &gloss;
-    let distractors = ctx.content.similar_words(w, 8);
-    let mut options = vec![gloss.clone()];
-    for d in distractors.iter().take(3) {
-        options.push(gloss_of(d, &ctx.definition_lang));
-    }
-    let opts = shuffle(options);
-    let answer_index = opts.iter().position(|o| *o == gloss).unwrap_or(0) as i32;
-    if en_to_es {
-        let opts2 = shuffle(vec![
-            w.lemma.clone(),
-            distractors.first().map(|d| d.lemma.clone()).unwrap_or_else(|| "comer".into()),
-            distractors.get(1).map(|d| d.lemma.clone()).unwrap_or_else(|| "beber".into()),
-            distractors.get(2).map(|d| d.lemma.clone()).unwrap_or_else(|| "vivir".into()),
-        ]);
-        let ai = opts2.iter().position(|o| *o == w.lemma).unwrap_or(0) as i32;
-        (
-            Round::Choice {
-                id,
-                word_id: w.word_id,
-                prompt: gloss,
-                prompt_lang: "en".into(),
-                options: opts2,
-                answer_index: ai,
-                audio_base64: ctx.audio(&w.lemma),
-            },
-            "choice",
-        )
+    // odd rounds go from the meaning to the word
+    let (prompt, prompt_lang, shown) = if id % 2 == 1 {
+        (gloss_of(w, &ctx.definition_lang), "en", Shown::Word)
     } else {
-        (
-            Round::Choice {
-                id,
-                word_id: w.word_id,
-                prompt: w.lemma.clone(),
-                prompt_lang: "es".into(),
-                options: opts,
-                answer_index,
-                audio_base64: ctx.audio(&w.lemma),
-            },
-            "choice",
-        )
-    }
+        (w.lemma.clone(), "es", Shown::Meaning)
+    };
+    let (options, answer_index) = options_for(ctx.content, w, shown, &ctx.definition_lang);
+    (
+        Round::Choice {
+            id,
+            word_id: w.word_id,
+            prompt,
+            prompt_lang: prompt_lang.into(),
+            options,
+            answer_index,
+            audio_base64: ctx.audio(&w.lemma),
+        },
+        "choice",
+    )
 }
 
 /// Hear the word, pick it out. Without a speech engine there is nothing to
@@ -605,20 +669,14 @@ fn listen_round(ctx: &mut GenCtx, id: i64, w: &WordCard) -> (Round, &'static str
     if !ctx.tts.available() {
         return choice_round(ctx, id, w);
     }
-    let distractors = ctx.content.similar_words(w, 8);
-    let mut options = vec![w.lemma.clone()];
-    for d in distractors.iter().take(3) {
-        options.push(d.lemma.clone());
-    }
-    let opts = shuffle(options);
-    let answer_index = opts.iter().position(|o| *o == w.lemma).unwrap_or(0) as i32;
+    let (options, answer_index) = options_for(ctx.content, w, Shown::Heard, &ctx.definition_lang);
     (
         Round::Listen {
             id,
             word_id: w.word_id,
             es: w.lemma.clone(),
             audio_base64: ctx.audio(&w.lemma),
-            options: opts,
+            options,
             answer_index,
         },
         "listen",
@@ -655,7 +713,8 @@ fn dictation_round(ctx: &mut GenCtx, id: i64, w: &WordCard) -> Option<(Round, &'
 }
 
 /// Blanks the word as it appears in the sentence ("comió", not "comer") and
-/// offers similar words in the same form as distractors.
+/// offers similar words in the same form as distractors. `None` when the
+/// sentence can't make a fair question of it.
 fn cloze_round(
     ctx: &mut GenCtx,
     id: i64,
@@ -663,21 +722,41 @@ fn cloze_round(
     es: &str,
     en: Option<&str>,
 ) -> Option<(Round, &'static str)> {
+    // The translation is shown with the gap: often more than one of the
+    // options makes a good Spanish sentence, and only it says which is meant.
+    let en = en.map(str::trim).filter(|en| !en.is_empty())?;
     let forms = ctx.content.forms_of(w.word_id);
-    let (start, token, tag) = words_in(es).into_iter().find_map(|(start, token)| {
+    let (start, token) = words_in(es).into_iter().find(|(_, token)| {
         let lower = token.to_lowercase();
-        forms
-            .iter()
-            .find(|(f, _)| *f == lower)
-            .map(|(_, tag)| (start, token, tag.clone()))
+        forms.iter().any(|(form, _)| *form == lower)
     })?;
     let target = token.to_lowercase();
+    // The form to put the distractors in. A spelling that is listed with the
+    // word without a place in its tables ("dame", "creerlo") has none: the
+    // others would stand next to it as bare infinitives, and the only option
+    // that looks like the gap would be the answer.
+    let tag = if target == w.lemma.to_lowercase() {
+        ""
+    } else {
+        forms.iter().find(|(form, tag)| *form == target && !tag.is_empty()).map(|(_, tag)| tag.as_str())?
+    };
+    let said = spaced_words(en);
     let mut options = vec![target.clone()];
     for d in ctx.content.similar_words(w, 12) {
         if options.len() == 4 {
             break;
         }
-        if let Some(f) = ctx.content.form_with_tag(d.word_id, &tag) {
+        // A word the translation names fits the gap as well as the answer
+        // does: "completamente" where it says "completely" for "totalmente".
+        // (A meaning with a note in brackets is not something a sentence says.)
+        let named = gloss_parts(d.gloss_en.as_deref()).iter().any(|meaning| {
+            let phrase = spaced_words(meaning);
+            !meaning.contains('(') && !phrase.trim().is_empty() && said.contains(&phrase)
+        });
+        if named {
+            continue;
+        }
+        if let Some(f) = ctx.content.form_with_tag(d.word_id, tag) {
             if !options.contains(&f) {
                 options.push(f);
             }
@@ -694,12 +773,124 @@ fn cloze_round(
             id,
             word_id: w.word_id,
             sentence_es: blanked,
-            sentence_en: en.unwrap_or("").to_string(),
+            sentence_en: en.to_string(),
             options: opts,
             answer_index,
         },
         "cloze",
     ))
+}
+
+/// `s` in lowercase with one space around every word and nothing else
+/// between them, so that looking for " word " or " two words " in it finds
+/// whole words only.
+fn spaced_words(s: &str) -> String {
+    let words: String = s
+        .to_lowercase()
+        .chars()
+        .map(|c| match c {
+            '’' => '\'',
+            c if c.is_alphabetic() || c == '\'' => c,
+            _ => ' ',
+        })
+        .collect();
+    format!(" {} ", words.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
+/// What a build round is graded on: the Rust twin of `norm` in
+/// `src/lib/grading.ts` (lowercase, punctuation to spaces, spaces
+/// collapsed). The two must stay in step.
+fn graded_as(s: &str) -> String {
+    let spaced: String = s
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+        .collect();
+    spaced.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The tiles of a build round: the sentence's words out of order. Never in
+/// an order that is graded as right before a tile is touched, which is not
+/// only the original order: tiles that are the same word may swap, and one
+/// that is only punctuation may be anywhere. `None` for a sentence with no
+/// wrong order ("Sí, sí.").
+fn build_tiles(es: &str) -> Option<Vec<String>> {
+    let mut tiles = shuffle(es.split_whitespace().map(String::from).collect::<Vec<_>>());
+    let solved = |tiles: &[String]| graded_as(&tiles.join(" ")) == graded_as(es);
+    if !solved(&tiles) {
+        return Some(tiles);
+    }
+    // Not shuffled again until it differs: the shuffle is seeded from the
+    // clock, and a retry inside the same tick would deal the same order for
+    // ever. Swapping two neighbouring words changes what is graded, unless
+    // they are the same word.
+    let worded: Vec<usize> = (0..tiles.len()).filter(|i| !graded_as(&tiles[*i]).is_empty()).collect();
+    for pair in worded.windows(2) {
+        tiles.swap(pair[0], pair[1]);
+        if !solved(&tiles) {
+            return Some(tiles);
+        }
+        tiles.swap(pair[0], pair[1]);
+    }
+    None
+}
+
+/// Groups of four words for match rounds: at most `chunks` of them, drawn at
+/// random from `pool`, each word in one group at most. Two words share a
+/// group only if no tile of one could be paired with a tile of the other and
+/// be right: they have no meaning in common ("ahí" and "allí" are both
+/// "there"), and in Spanish, not the same definition either. A word without
+/// a meaning in the round's language is left out, since its tile in the
+/// other language would give its pair away.
+fn match_chunks(pool: &[WordCard], lang: &str, chunks: usize) -> Vec<Vec<WordCard>> {
+    struct Entry {
+        word: WordCard,
+        lemma: String,
+        shown: String,
+        en: HashSet<String>,
+        es: HashSet<String>,
+    }
+    let spanish = lang == "es";
+    let mut used = HashSet::new();
+    let mut open: Vec<Vec<Entry>> = Vec::new();
+    let mut full = 0;
+    for word in shuffle(pool.to_vec()) {
+        if full >= chunks {
+            break;
+        }
+        let meaning = if spanish { &word.gloss_es } else { &word.gloss_en };
+        let Some(shown) = meaning.as_ref().map(|m| m.trim().to_lowercase()) else {
+            continue;
+        };
+        if !used.insert(word.word_id) {
+            continue;
+        }
+        let entry = Entry {
+            lemma: word.lemma.to_lowercase(),
+            shown,
+            en: gloss_parts(word.gloss_en.as_deref()),
+            es: gloss_parts(word.gloss_es.as_deref()),
+            word,
+        };
+        let apart = |other: &Entry| {
+            other.lemma != entry.lemma
+                && other.shown != entry.shown
+                && other.en.is_disjoint(&entry.en)
+                && (!spanish || other.es.is_disjoint(&entry.es))
+        };
+        match open.iter_mut().find(|chunk| chunk.len() < 4 && chunk.iter().all(apart)) {
+            Some(chunk) => {
+                chunk.push(entry);
+                full += usize::from(chunk.len() == 4);
+            }
+            None => open.push(vec![entry]),
+        }
+    }
+    open.into_iter()
+        .filter(|chunk| chunk.len() == 4)
+        .take(chunks)
+        .map(|chunk| chunk.into_iter().map(|entry| entry.word).collect())
+        .collect()
 }
 
 /// (byte offset, word) for each run of letters in `s`.
@@ -761,33 +952,18 @@ pub fn placement_items(content: &ContentDb) -> Vec<PlacementItem> {
     let bands = [40i64, 120, 350, 800, 1600, 2800, 4500, 6500, 9000, 11500];
     let mut items = Vec::new();
     for band in bands {
-        let candidates = content.words_by_rank(band, 6);
-        let Some(w) = candidates.iter().find(|w| w.gloss_en.is_some()) else {
+        let Some(w) = content.words_by_rank(band, 1).into_iter().next() else {
             continue;
         };
-        let gloss = w.gloss_en.clone().unwrap_or_default();
-        let distractors = content.similar_words(w, 12);
-        let mut options = vec![gloss.clone()];
-        for d in distractors.iter() {
-            if let Some(g) = &d.gloss_en {
-                if !options.contains(g) {
-                    options.push(g.clone());
-                }
-            }
-            if options.len() == 4 {
-                break;
-            }
-        }
-        let opts = shuffle(options);
-        if let Some(ai) = opts.iter().position(|o| *o == gloss) {
-            items.push(PlacementItem {
-                word_id: w.word_id,
-                lemma: w.lemma.clone(),
-                options: opts,
-                answer_index: ai as i32,
-                band: w.level.clone(),
-            });
-        }
+        // placement is asked in English, whatever the definitions setting
+        let (options, answer_index) = options_for(content, &w, Shown::Meaning, "en");
+        items.push(PlacementItem {
+            word_id: w.word_id,
+            lemma: w.lemma,
+            options,
+            answer_index,
+            band: w.level,
+        });
     }
     shuffle(items)
 }
@@ -1038,6 +1214,7 @@ pub fn session_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     fn content() -> ContentDb {
         ContentDb::open(std::path::Path::new(concat!(
@@ -1069,7 +1246,7 @@ mod tests {
     }
 
     fn with_ctx<T>(f: impl FnOnce(&mut GenCtx) -> T) -> T {
-        with_ctx_speaking(Tts::off, f)
+        with_ctx_in("en", Tts::off, f)
     }
 
     /// A voice that is there but never asked to speak: generating rounds
@@ -1079,6 +1256,11 @@ mod tests {
     }
 
     fn with_ctx_speaking<T>(tts: impl FnOnce(&std::path::Path) -> Tts, f: impl FnOnce(&mut GenCtx) -> T) -> T {
+        with_ctx_in("en", tts, f)
+    }
+
+    /// A context with definitions in `lang` ("en", or "es" for Español primero).
+    fn with_ctx_in<T>(lang: &str, tts: impl FnOnce(&std::path::Path) -> Tts, f: impl FnOnce(&mut GenCtx) -> T) -> T {
         let content = content();
         let (dir, user) = fresh_user();
         let tts = tts(&dir.0);
@@ -1087,7 +1269,7 @@ mod tests {
             content: &content,
             user: &user,
             tts: &tts,
-            definition_lang: "en".into(),
+            definition_lang: lang.into(),
             used_sentences: &mut used,
             introduced: &mut introduced,
             to_speak: Default::default(),
@@ -1105,7 +1287,7 @@ mod tests {
         with_ctx(|ctx| {
             let tener = word(ctx.content, "tener");
             let (round, _) =
-                cloze_round(ctx, 0, &tener, "Yo tengo un perro muy grande.", None).unwrap();
+                cloze_round(ctx, 0, &tener, "Yo tengo un perro muy grande.", Some("I have a very big dog.")).unwrap();
             let Round::Cloze { sentence_es, options, answer_index, .. } = round else {
                 panic!("not a cloze round")
             };
@@ -1123,7 +1305,7 @@ mod tests {
                     .unwrap();
                 assert!(same_form, "{o} is not a presente/yo form: {options:?}");
             }
-            assert!(cloze_round(ctx, 0, &tener, "No hay nada aquí.", None).is_none());
+            assert!(cloze_round(ctx, 0, &tener, "No hay nada aquí.", Some("There is nothing here.")).is_none());
         });
     }
 
@@ -1173,14 +1355,526 @@ mod tests {
         };
         assert!(!lemmas("ser").iter().any(|l| l == "estar" || l == "haber"), "{:?}", lemmas("ser"));
         assert!(!lemmas("tu").iter().any(|l| l == "su"), "{:?}", lemmas("tu"));
+        // "they, them" and "to them, for them": the "to" doesn't make it another meaning
+        assert!(!lemmas("ellos").iter().any(|l| l == "les"), "{:?}", lemmas("ellos"));
 
         let parts = |g: &Option<String>| -> HashSet<String> {
-            g.as_deref().unwrap_or("").split([';', ',']).map(|p| p.trim().to_lowercase()).filter(|p| !p.is_empty()).collect()
+            g.as_deref()
+                .unwrap_or("")
+                .split([';', ','])
+                .map(|p| p.trim().to_lowercase())
+                .map(|p| p.strip_prefix("to ").unwrap_or(&p).to_string())
+                .filter(|p| !p.is_empty())
+                .collect()
         };
         for w in content.words_by_rank(1, 300) {
-            for d in content.similar_words(&w, 8) {
+            for d in content.similar_words(&w, 8).iter().chain(&content.distractor_candidates(&w, 40)) {
                 assert!(parts(&w.gloss_en).is_disjoint(&parts(&d.gloss_en)), "{} / {}: {:?} vs {:?}", w.lemma, d.lemma, w.gloss_en, d.gloss_en);
             }
+        }
+    }
+
+    #[test]
+    fn wrong_answers_are_words_that_could_be_taught() {
+        let content = content();
+        let teachable: HashSet<i64> = content.new_candidates(usize::MAX, &HashSet::new()).iter().map(|w| w.word_id).collect();
+        // Words that are never taught (used only outside Spain, vulgar, stray
+        // letters), each next to its nearest neighbour of the same class:
+        // where it would be offered first, if it were offered at all.
+        let mut left_out: Vec<WordCard> = content
+            .word_ids()
+            .iter()
+            .filter(|id| !teachable.contains(id))
+            .filter_map(|id| content.word(*id))
+            .filter(|w| w.rank <= 3000)
+            .collect();
+        left_out.sort_by_key(|w| w.rank);
+        assert!(!left_out.is_empty());
+        for outsider in &left_out {
+            let Some(neighbour) = content.similar_words(outsider, 1).pop() else { continue };
+            let same_class = content.similar_words(&neighbour, 12_000);
+            let any_class = content.distractor_candidates(&neighbour, 12_000);
+            assert!(same_class.len() > 3 && any_class.len() > same_class.len(), "{}", neighbour.lemma);
+            for d in same_class.iter().chain(&any_class) {
+                assert!(teachable.contains(&d.word_id), "rank {} is offered as a wrong answer for {}", d.rank, neighbour.lemma);
+            }
+            // own class first, then the rest; nearest in frequency first in each
+            let own: Vec<bool> = any_class.iter().map(|d| d.pos == neighbour.pos).collect();
+            assert!(own.windows(2).all(|p| p[0] || !p[1]), "{}: a word of another class before one of its own", neighbour.lemma);
+            let distance = |d: &WordCard| (d.rank - neighbour.rank).abs();
+            assert!(any_class.windows(2).all(|p| (p[0].pos == neighbour.pos) != (p[1].pos == neighbour.pos) || distance(&p[0]) <= distance(&p[1])));
+        }
+    }
+
+    fn options_of(round: &Round) -> (&[String], usize) {
+        match round {
+            Round::Choice { options, answer_index, .. }
+            | Round::Listen { options, answer_index, .. }
+            | Round::Cloze { options, answer_index, .. } => (options, *answer_index as usize),
+            _ => panic!("a round without options"),
+        }
+    }
+
+    fn assert_four_that_read_differently(options: &[String], what: &str) {
+        assert_eq!(options.len(), 4, "{what}: {options:?}");
+        let read: HashSet<String> = options.iter().map(|o| o.trim().to_lowercase()).collect();
+        assert_eq!(read.len(), 4, "{what}: two options read the same: {options:?}");
+    }
+
+    /// Every teachable word, by lemma.
+    fn dictionary(content: &ContentDb) -> HashMap<String, WordCard> {
+        content.new_candidates(usize::MAX, &HashSet::new()).into_iter().map(|w| (w.lemma.clone(), w)).collect()
+    }
+
+    #[test]
+    fn every_multiple_choice_round_has_four_distinct_options() {
+        for lang in ["en", "es"] {
+            with_ctx_in(lang, voice, |ctx| {
+                let words = dictionary(ctx.content);
+                // the commonest words: the articles, "sí", "del" and "al" are
+                // among them, which have few or no words of their own class
+                for w in ctx.content.words_by_rank(1, 600) {
+                    let what = format!("{} ({lang})", w.lemma);
+                    let meanings = gloss_parts(w.gloss_en.as_deref());
+
+                    let (round, _) = choice_round(ctx, 0, &w);
+                    let (options, answer) = options_of(&round);
+                    assert_four_that_read_differently(options, &what);
+                    assert_eq!(options[answer], gloss_of(&w, lang), "{what}");
+
+                    let (round, _) = choice_round(ctx, 1, &w);
+                    let (options, answer) = options_of(&round);
+                    assert_four_that_read_differently(options, &what);
+                    assert_eq!(options[answer], w.lemma, "{what}");
+                    // real words that mean something else, not padding
+                    for other in options.iter().filter(|o| **o != w.lemma) {
+                        let d = words.get(other).unwrap_or_else(|| panic!("{what}: {other} is no word that is taught"));
+                        assert!(gloss_parts(d.gloss_en.as_deref()).is_disjoint(&meanings), "{what}: {other} means the same");
+                    }
+
+                    let (round, ty) = listen_round(ctx, 2, &w);
+                    assert_eq!(ty, "listen");
+                    let (options, answer) = options_of(&round);
+                    assert_four_that_read_differently(options, &what);
+                    assert_eq!(options[answer], w.lemma, "{what}");
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn listening_options_never_sound_alike() {
+        for (a, b) in [("el", "él"), ("si", "sí"), ("vaca", "baca"), ("hola", "ola"), ("valla", "vaya"), ("hecho", "echo"), ("Tuvo", "tubo")] {
+            assert_eq!(sound_key(a), sound_key(b), "{a} / {b}");
+        }
+        for (a, b) in [("una", "uña"), ("coche", "coce"), ("pero", "perro"), ("casa", "caza")] {
+            assert_ne!(sound_key(a), sound_key(b), "{a} / {b}");
+        }
+
+        with_ctx_speaking(voice, |ctx| {
+            // words that sound like another word, as the ear has it
+            let mut alike: HashMap<String, Vec<WordCard>> = HashMap::new();
+            for w in dictionary(ctx.content).into_values() {
+                alike.entry(sound_key(&w.lemma)).or_default().push(w);
+            }
+            let mut with_a_twin = 0;
+            for w in ctx.content.words_by_rank(1, 600) {
+                let (round, _) = listen_round(ctx, 0, &w);
+                let (options, answer) = options_of(&round);
+                assert_four_that_read_differently(options, &w.lemma);
+                assert_eq!(options[answer], w.lemma);
+                let sounds: HashSet<String> = options.iter().map(|o| sound_key(o)).collect();
+                assert_eq!(sounds.len(), 4, "{}: two options sound the same: {options:?}", w.lemma);
+
+                // sidecar says the word and shows meanings: the meaning of a
+                // word that sounds the same is as right as the answer
+                let (meanings, _) = options_for(ctx.content, &w, Shown::HeardMeaning, "en");
+                assert_four_that_read_differently(&meanings, &w.lemma);
+                for twin in alike[&sound_key(&w.lemma)].iter().filter(|t| t.gloss_en != w.gloss_en) {
+                    with_a_twin += 1;
+                    assert!(!meanings.contains(&gloss_in(twin, "en")), "{}: offers the meaning of {}", w.lemma, twin.lemma);
+                }
+            }
+            assert!(with_a_twin > 0, "no common word sounds like another: nothing was tested");
+
+            // Words short of others of their own class, which get wrong
+            // answers from other classes: their twins among them.
+            let mut would_be_offered = 0;
+            for (heard, twin) in [("sí", "si"), ("el", "él")] {
+                let w = word(ctx.content, heard);
+                let nearest = ctx.content.distractor_candidates(&w, 3);
+                would_be_offered += usize::from(nearest.iter().any(|d| d.lemma == twin));
+                for _ in 0..20 {
+                    let (round, _) = listen_round(ctx, 0, &w);
+                    let (options, answer) = options_of(&round);
+                    assert_eq!((options.len(), options[answer].as_str()), (4, heard));
+                    assert!(!options.iter().any(|o| o == twin), "{heard}: {options:?}");
+                }
+            }
+            assert!(would_be_offered > 0, "neither twin is among the nearest words any more: pick another pair");
+        });
+    }
+
+    #[test]
+    fn spanish_first_meaning_rounds_use_one_language() {
+        let content = content();
+        let glosses = |column: &str| -> HashSet<String> {
+            let mut stmt = content.conn.prepare(&format!("SELECT {column} FROM words WHERE {column} IS NOT NULL")).unwrap();
+            let rows = stmt.query_map([], |r| r.get(0)).unwrap();
+            rows.map(|r| r.unwrap()).collect()
+        };
+        let (spanish, english) = (glosses("gloss_es"), glosses("gloss_en"));
+        let common = content.words_by_rank(1, 600);
+        // both kinds of word are among them
+        assert!(common.iter().any(|w| w.gloss_es.is_some()) && common.iter().any(|w| w.gloss_es.is_none()));
+
+        with_ctx_in("es", voice, |ctx| {
+            let words = dictionary(ctx.content);
+            for w in &common {
+                let definition = gloss_parts(w.gloss_es.as_deref());
+                let (round, _) = choice_round(ctx, 0, w);
+                let shown = [
+                    options_of(&round).0.to_vec(),
+                    // as sidecar builds them
+                    options_for(ctx.content, w, Shown::Meaning, "es").0,
+                    options_for(ctx.content, w, Shown::HeardMeaning, "es").0,
+                ];
+                for options in &shown {
+                    assert_eq!(options.len(), 4, "{}", w.lemma);
+                    for o in options {
+                        if let Some(own) = &w.gloss_es {
+                            assert!(spanish.contains(o), "{}: \"{o}\" among Spanish definitions", w.lemma);
+                            assert!(o == own || gloss_parts(Some(o)).is_disjoint(&definition), "{}: \"{o}\" defines it too", w.lemma);
+                        } else {
+                            assert!(english.contains(o), "{}: \"{o}\" among English meanings", w.lemma);
+                        }
+                    }
+                }
+
+                // from a Spanish definition to the word: only one word it defines
+                let (round, _) = choice_round(ctx, 1, w);
+                let Round::Choice { prompt, options, .. } = &round else { panic!() };
+                assert_eq!(*prompt, gloss_of(w, "es"));
+                if w.gloss_es.is_some() {
+                    for other in options.iter().filter(|o| **o != w.lemma) {
+                        assert!(gloss_parts(words[other].gloss_es.as_deref()).is_disjoint(&definition), "{}: \"{prompt}\" defines {other} too", w.lemma);
+                    }
+                }
+            }
+
+        });
+    }
+
+    /// A word nobody has to look up in the dictionary to test a rule with.
+    fn made_up(id: i64, lemma: &str, gloss_en: &str, gloss_es: Option<&str>) -> WordCard {
+        WordCard {
+            word_id: id,
+            lemma: lemma.into(),
+            pos: Some("noun".into()),
+            rank: id,
+            gloss_en: Some(gloss_en.into()),
+            gloss_es: gloss_es.map(String::from),
+            level: "A1".into(),
+        }
+    }
+
+    #[test]
+    fn an_option_that_would_be_right_too_is_left_out() {
+        let vaca = made_up(1, "vaca", "cow", Some("Hembra del toro"));
+        let candidates = vec![
+            // sounds like the word asked about
+            made_up(2, "baca", "roof rack", Some("Soporte que se coloca en el techo")),
+            // is defined partly as it is
+            made_up(3, "res", "head of cattle", Some("Animal vacuno, hembra del toro")),
+            // reads like it, and its meaning like the one before last
+            made_up(4, "Vaca", " Roof rack ", None),
+            made_up(5, "toro", "bull", Some("Macho de la vaca")),
+            made_up(6, "valla", "fence", Some("Cerca")),
+            // sounds like the one before
+            made_up(7, "vaya", "wow", None),
+            made_up(8, "cerdo", "pig", Some("Mamífero doméstico")),
+            made_up(9, "pato", "duck", Some("Ave acuática")),
+        ];
+        // (the right option, the wrong ones in alphabetical order)
+        let offered = |w: &WordCard, from: &[WordCard], shown: Shown, lang: &str| {
+            let (options, answer) = options_from(w, from.to_vec(), shown, lang);
+            let right = options[answer as usize].clone();
+            let mut wrong: Vec<String> = options.into_iter().filter(|o| *o != right).collect();
+            wrong.sort();
+            (right, wrong)
+        };
+        let all = |shown: Shown, lang: &str| offered(&vaca, &candidates, shown, lang);
+        let these = |right: &str, wrong: [&str; 3]| (right.to_string(), wrong.map(String::from).to_vec());
+
+        // the first three, but no two that read the same on the buttons
+        assert_eq!(all(Shown::Meaning, "en"), these("cow", ["bull", "head of cattle", "roof rack"]));
+        assert_eq!(all(Shown::Word, "en"), these("vaca", ["baca", "res", "toro"]));
+        // only heard: nothing that sounds like the word, whatever is shown...
+        assert_eq!(all(Shown::Heard, "en"), these("vaca", ["res", "toro", "valla"]));
+        assert_eq!(all(Shown::Heard, "es"), these("vaca", ["res", "toro", "valla"]));
+        assert_eq!(all(Shown::HeardMeaning, "en"), these("cow", ["bull", "fence", "head of cattle"]));
+        // ...and no two words that sound like each other
+        assert_eq!(offered(&vaca, &candidates[4..], Shown::Heard, "en"), these("vaca", ["cerdo", "pato", "valla"]));
+        // Spanish definitions: only from words that have one, and none that
+        // also defines the word asked about
+        assert_eq!(
+            all(Shown::Meaning, "es"),
+            these("Hembra del toro", ["Cerca", "Macho de la vaca", "Soporte que se coloca en el techo"])
+        );
+        assert_eq!(all(Shown::HeardMeaning, "es"), these("Hembra del toro", ["Cerca", "Macho de la vaca", "Mamífero doméstico"]));
+        // words to pick for a Spanish definition: any that it doesn't define
+        assert_eq!(all(Shown::Word, "es"), these("vaca", ["baca", "toro", "valla"]));
+
+        // a word with no Spanish definition is asked about in English throughout
+        let vaya = &candidates[5];
+        assert_eq!(offered(vaya, &candidates[..5], Shown::Meaning, "es"), these("wow", ["bull", "head of cattle", "roof rack"]));
+
+        // with too few words to offer, the round has what there is
+        let (options, answer) = options_from(&vaca, candidates[..2].to_vec(), Shown::Meaning, "en");
+        assert_eq!((options.len(), options[answer as usize].as_str()), (3, "cow"));
+        assert_eq!(options_from(&vaca, vec![], Shown::Heard, "en"), (vec!["vaca".to_string()], 0));
+    }
+
+    /// Two common words whose English glosses have nothing in common, but
+    /// whose Spanish definitions share a part.
+    fn defined_alike(content: &ContentDb) -> (WordCard, WordCard) {
+        let common = content.words_by_rank(1, 1500);
+        let en = |w: &WordCard| gloss_parts(w.gloss_en.as_deref());
+        let es = |w: &WordCard| gloss_parts(w.gloss_es.as_deref());
+        for (i, b) in common.iter().enumerate() {
+            if let Some(a) = common[..i].iter().find(|a| en(a).is_disjoint(&en(b)) && !es(a).is_disjoint(&es(b))) {
+                return (a.clone(), b.clone());
+            }
+        }
+        panic!("no two common words share a Spanish definition only");
+    }
+
+    #[test]
+    fn match_chunks_never_hold_two_words_that_mean_the_same() {
+        let content = content();
+        let mut pool: Vec<WordCard> =
+            ["ahí", "allí", "aquí", "acá", "eso", "ese", "esto", "este", "casa", "perro", "comer", "grande", "ayer", "libro"]
+                .iter()
+                .map(|lemma| word(&content, lemma))
+                .collect();
+        let (one, other) = defined_alike(&content);
+        pool.extend([one, other]);
+        let en = |w: &WordCard| gloss_parts(w.gloss_en.as_deref());
+        let es = |w: &WordCard| gloss_parts(w.gloss_es.as_deref());
+        // What the pool is made of: words that share an English meaning, two
+        // that share only their Spanish definition, and one that has none.
+        let pairs = || pool.iter().enumerate().flat_map(|(i, a)| pool[i + 1..].iter().map(move |b| (a, b)));
+        assert!(pairs().filter(|(a, b)| !en(a).is_disjoint(&en(b))).count() >= 4, "the pool's words no longer mean the same");
+        assert!(pool.iter().any(|w| w.gloss_es.is_none()), "every word of the pool has a Spanish definition now");
+
+        for lang in ["en", "es"] {
+            for _ in 0..200 {
+                let chunks = match_chunks(&pool, lang, 2);
+                assert!(!chunks.is_empty() && chunks.len() <= 2, "{lang}: {} chunks", chunks.len());
+                let mut dealt = HashSet::new();
+                for chunk in &chunks {
+                    assert_eq!(chunk.len(), 4);
+                    for (i, a) in chunk.iter().enumerate() {
+                        assert!(dealt.insert(a.word_id), "{} is in two rounds", a.lemma);
+                        assert!(lang == "en" || a.gloss_es.is_some(), "{} has no Spanish definition to show", a.lemma);
+                        for b in &chunk[i + 1..] {
+                            assert_ne!(a.lemma, b.lemma);
+                            assert!(en(a).is_disjoint(&en(b)), "{lang}: {} and {} mean the same", a.lemma, b.lemma);
+                            assert!(lang == "en" || es(a).is_disjoint(&es(b)), "{} and {} are defined the same", a.lemma, b.lemma);
+                        }
+                    }
+                }
+            }
+        }
+
+        // too few words that can share a round make none, not a bad one
+        let alike: Vec<WordCard> = pool[..6].to_vec();
+        assert!(match_chunks(&alike, "en", 2).is_empty());
+        assert!(match_chunks(&pool, "en", 0).is_empty());
+        assert!(match_chunks(&[], "en", 2).is_empty());
+        // and a word given twice is still one word
+        let twice: Vec<WordCard> = pool[8..12].iter().chain(&pool[8..12]).cloned().collect();
+        assert_eq!(match_chunks(&twice, "en", 2).len(), 1);
+    }
+
+    #[test]
+    fn build_tiles_are_never_dealt_solved() {
+        // as `norm` in grading.ts: what the round is graded on
+        assert_eq!(graded_as("  ¡Hola — ¿Qué   tal, tío?"), "hola qué tal tío");
+
+        // duplicate words and a tile that is only punctuation: orders other
+        // than the original that are graded as right
+        for sentence in ["Tengo un perro.", "Hola — ¿qué tal?", "No, no lo sé.", "Te quiero.", "Sí, claro, sí."] {
+            let mut words: Vec<&str> = sentence.split_whitespace().collect();
+            words.sort();
+            for _ in 0..300 {
+                let tiles = build_tiles(sentence).unwrap();
+                assert_ne!(graded_as(&tiles.join(" ")), graded_as(sentence), "{sentence}: dealt as {tiles:?}");
+                let mut dealt: Vec<&str> = tiles.iter().map(String::as_str).collect();
+                dealt.sort();
+                assert_eq!(dealt, words);
+            }
+        }
+        // no order of these is wrong
+        for sentence in ["Sí, sí.", "¡Hola!", "No... no, ¡no!", ""] {
+            assert!(build_tiles(sentence).is_none(), "{sentence}");
+        }
+    }
+
+    fn cloze_options(ctx: &mut GenCtx, w: &WordCard, es: &str, en: &str) -> Option<(Vec<String>, String)> {
+        cloze_round(ctx, 0, w, es, Some(en)).map(|(round, _)| {
+            let (options, answer) = options_of(&round);
+            (options.to_vec(), options[answer].clone())
+        })
+    }
+
+    #[test]
+    fn cloze_needs_a_translation_and_skips_distractors_it_names() {
+        with_ctx(|ctx| {
+            let tener = word(ctx.content, "tener");
+            let es = "Yo tengo un perro muy grande.";
+            assert!(cloze_round(ctx, 0, &tener, es, None).is_none());
+            assert!(cloze_round(ctx, 0, &tener, es, Some("  ")).is_none());
+            let Some((Round::Cloze { sentence_en, .. }, _)) = cloze_round(ctx, 0, &tener, es, Some("I have a very big dog.")) else {
+                panic!("no cloze with a translation")
+            };
+            assert_eq!(sentence_en, "I have a very big dog.");
+
+            // "completamente" would fit as well, and the translation says so
+            let totalmente = word(ctx.content, "totalmente");
+            let es = "Estaba totalmente agotado.";
+            let (unnamed, answer) = cloze_options(ctx, &totalmente, es, "He was utterly worn out.").unwrap();
+            assert_eq!(answer, "totalmente");
+            assert!(unnamed.iter().any(|o| o == "completamente"), "completamente is no distractor of totalmente any more: pick another pair");
+            let named = cloze_options(ctx, &totalmente, es, "He was completely worn out.");
+            assert!(!named.unwrap().0.iter().any(|o| o == "completamente"));
+
+            // the same for whichever words are offered: name one, and it goes
+            for lemma in ["totalmente", "casa", "grande", "comer"] {
+                let w = word(ctx.content, lemma);
+                let es = format!("Dicen que {lemma} es la palabra.");
+                let (options, _) = cloze_options(ctx, &w, &es, "Zzz.").unwrap();
+                for d in options.iter().filter(|o| **o != lemma) {
+                    let meaning = gloss_parts(word(ctx.content, d).gloss_en.as_deref())
+                        .into_iter()
+                        .find(|m| !m.contains('('))
+                        .unwrap();
+                    // as a whole word or phrase, whatever is around it...
+                    let en = format!("They say \"{}\"; is that the word?", meaning.to_uppercase());
+                    let left = cloze_options(ctx, &w, &es, &en).map(|(options, _)| options).unwrap_or_default();
+                    assert!(!left.contains(d), "{lemma}: {d} is offered though the translation says \"{meaning}\"");
+                    // ...but not as a piece of another word
+                    let en = format!("They say x{meaning}x.");
+                    assert!(cloze_options(ctx, &w, &es, &en).unwrap().0.contains(d), "{lemma}: {d}");
+                }
+            }
+
+            // a translation that settles it already costs no options
+            let me = word(ctx.content, "me");
+            let (options, answer) = cloze_options(ctx, &me, "No me sorprende.", "It doesn't surprise me.").unwrap();
+            assert_eq!(answer, "me");
+            assert!(options.len() >= 3);
+        });
+    }
+
+    #[test]
+    fn cloze_never_blanks_an_untagged_inflected_form() {
+        with_ctx(|ctx| {
+            let dar = word(ctx.content, "dar");
+            assert!(cloze_round(ctx, 0, &dar, "Dame tu dinero.", Some("Give me your money.")).is_none());
+            // the word itself is still a gap, with other words as they are
+            let (options, answer) = cloze_options(ctx, &dar, "Te quiero dar un regalo.", "I want to give you a present.").unwrap();
+            assert_eq!(answer, "dar");
+            for o in &options {
+                assert!(!ctx.content.word_ids_by_lemma(o).is_empty(), "{o} is not a dictionary form: {options:?}");
+            }
+
+            // any spelling listed with a common word without saying which of
+            // its forms it is
+            let listed: Vec<(String, String)> = {
+                let mut stmt = ctx
+                    .content
+                    .conn
+                    .prepare(
+                        "SELECT f.form, w.lemma FROM forms f JOIN words w ON w.id = f.word_id
+                         WHERE f.form != w.lemma AND w.rank <= 300 AND w.register IS NULL
+                         GROUP BY f.form, f.word_id HAVING MAX(f.tag != '') = 0
+                         ORDER BY w.rank, f.form",
+                    )
+                    .unwrap();
+                let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+                rows.map(|r| r.unwrap()).collect()
+            };
+            assert!(listed.len() > 100, "{} such forms", listed.len());
+            for (form, lemma) in &listed {
+                let w = word(ctx.content, lemma);
+                let es = format!("{form} zzz zzz zzz.");
+                assert!(cloze_round(ctx, 0, &w, &es, Some("Zzz zzz zzz.")).is_none(), "\"{form}\" was blanked for {lemma}");
+            }
+        });
+    }
+
+    #[test]
+    fn placement_items_all_have_four_options() {
+        let content = content();
+        for _ in 0..5 {
+            let items = placement_items(&content);
+            assert_eq!(items.len(), 10);
+            for item in &items {
+                assert_four_that_read_differently(&item.options, &item.lemma);
+                let w = content.word(item.word_id).unwrap();
+                assert_eq!(item.options.get(item.answer_index as usize), w.gloss_en.as_ref(), "{}", item.lemma);
+            }
+        }
+    }
+
+    #[test]
+    fn generated_sessions_keep_what_each_round_promises() {
+        let content = content();
+        let (dir, user) = fresh_user();
+        let tts = voice(&dir.0);
+        // a deck with words that are easily taken for one another
+        for lemma in ["ahí", "allí", "aquí", "acá", "eso", "ese", "esto", "este", "empezar", "comenzar", "sí", "si", "el", "él", "la", "los", "del", "al"] {
+            deck::introduce(&user, word(&content, lemma).word_id).unwrap();
+        }
+        let parts = |word_id: i64, lang: &str| {
+            let w = content.word(word_id).unwrap();
+            gloss_parts(if lang == "es" { w.gloss_es.as_deref() } else { w.gloss_en.as_deref() })
+        };
+        let mut seen: HashMap<&str, usize> = HashMap::new();
+        for lang in ["en", "es"] {
+            for kind in [SessionKind::Standard, SessionKind::Deep, SessionKind::Deep, SessionKind::Sidecar] {
+                let g = generate(kind, &content, &user, &tts, lang);
+                for (round, ty) in g.rounds.iter().zip(&g.round_types) {
+                    *seen.entry(ty).or_default() += 1;
+                    match round {
+                        Round::Choice { options, .. } | Round::Listen { options, .. } => {
+                            assert_four_that_read_differently(options, ty);
+                        }
+                        Round::Cloze { options, sentence_en, .. } => {
+                            assert!(options.len() >= 3 && !sentence_en.trim().is_empty());
+                        }
+                        Round::Build { tiles, answer, .. } => {
+                            assert_ne!(graded_as(&tiles.join(" ")), graded_as(answer), "dealt solved: {tiles:?}");
+                        }
+                        Round::Match { pairs, .. } => {
+                            assert_eq!(pairs.len(), 4);
+                            for (i, a) in pairs.iter().enumerate() {
+                                let w = content.word(a.word_id).unwrap();
+                                assert_eq!(Some(&a.en), if lang == "es" { w.gloss_es.as_ref() } else { w.gloss_en.as_ref() }, "{}", a.es);
+                                for b in &pairs[i + 1..] {
+                                    assert!(parts(a.word_id, "en").is_disjoint(&parts(b.word_id, "en")), "{lang}: {} / {}", a.es, b.es);
+                                    assert!(lang == "en" || parts(a.word_id, "es").is_disjoint(&parts(b.word_id, "es")), "{} / {}", a.es, b.es);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        for ty in ["choice", "listen", "build", "match"] {
+            assert!(seen.get(ty).copied().unwrap_or(0) > 0, "no {ty} round in eight sessions: {seen:?}");
         }
     }
 

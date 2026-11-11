@@ -10,10 +10,10 @@ pub struct ContentDb {
 }
 
 /// A word that may be taught: it has a meaning to show, and is neither vulgar
-/// nor used only outside Spain. Every query that picks words to introduce or
-/// to place by goes through this, so they can't disagree about which words
-/// those are. (The length test keeps stray single letters out until the
-/// content database itself drops them.)
+/// nor used only outside Spain. Every query that picks words to introduce, to
+/// place by or to offer as a wrong answer goes through this, so they can't
+/// disagree about which words those are. (The length test keeps stray single
+/// letters out until the content database itself drops them.)
 const TEACHABLE: &str =
     "(gloss_en IS NOT NULL AND LENGTH(lemma) >= 2 AND register IS NULL AND region IS NULL)";
 
@@ -147,20 +147,21 @@ impl ContentDb {
             .unwrap_or_default()
     }
 
-    /// Distractors for `word`: same part of speech, similar frequency, and no
-    /// meaning in common. Sharing any gloss part makes two answers both right:
-    /// "ser" and "estar" are both "to be", "tu" and "su" both "your".
+    /// Distractors for `word` from its own part of speech: teachable words of
+    /// similar frequency with no meaning in common. Sharing any gloss part
+    /// makes two answers both right: "ser" and "estar" are both "to be", "tu"
+    /// and "su" both "your". For rounds where a word of another class would
+    /// stand out (a noun offered for a gap that takes a verb).
     pub fn similar_words(&self, word: &WordCard, limit: i64) -> Vec<WordCard> {
         let meanings = gloss_parts(word.gloss_en.as_deref());
         let mut stmt = self
             .conn
-            .prepare(
+            .prepare(&format!(
                 "SELECT id, lemma, pos, rank, gloss_en, gloss_es FROM words
-                 WHERE id != ?1 AND gloss_en IS NOT NULL AND lemma != ?2
-                   AND (pos IS ?3 OR pos IS NULL) AND ABS(rank - ?4) < 4000
-                   AND register IS NULL
-                 ORDER BY ABS(rank - ?4)",
-            )
+                 WHERE id != ?1 AND lemma != ?2 AND (pos IS ?3 OR pos IS NULL)
+                   AND ABS(rank - ?4) < 4000 AND {TEACHABLE}
+                 ORDER BY ABS(rank - ?4), rank"
+            ))
             .unwrap();
         stmt.query_map(
             rusqlite::params![word.word_id, word.lemma, word.pos, word.rank],
@@ -170,6 +171,35 @@ impl ContentDb {
             rows.filter_map(|r| r.ok())
                 .filter(|w| gloss_parts(w.gloss_en.as_deref()).is_disjoint(&meanings))
                 .take(limit.max(0) as usize)
+                .collect()
+        })
+        .unwrap_or_default()
+    }
+
+    /// Wrong answers to offer next to `word`, best first: teachable words
+    /// with no meaning in common, those of its own part of speech before the
+    /// rest, and the nearest in frequency first within each. Unlike
+    /// `similar_words` this never runs dry: "sí" is the only word of its
+    /// class and the articles all mean "the", and a question with one or two
+    /// options is no question.
+    pub fn distractor_candidates(&self, word: &WordCard, limit: usize) -> Vec<WordCard> {
+        let meanings = gloss_parts(word.gloss_en.as_deref());
+        let mut stmt = self
+            .conn
+            .prepare(&format!(
+                "SELECT id, lemma, pos, rank, gloss_en, gloss_es FROM words
+                 WHERE id != ?1 AND lemma != ?2 AND ABS(rank - ?4) < 4000 AND {TEACHABLE}
+                 ORDER BY (pos IS NOT ?3), ABS(rank - ?4), rank"
+            ))
+            .unwrap();
+        stmt.query_map(
+            rusqlite::params![word.word_id, word.lemma, word.pos, word.rank],
+            word_from_row,
+        )
+        .map(|rows| {
+            rows.filter_map(|r| r.ok())
+                .filter(|w| gloss_parts(w.gloss_en.as_deref()).is_disjoint(&meanings))
+                .take(limit)
                 .collect()
         })
         .unwrap_or_default()
@@ -229,27 +259,51 @@ impl ContentDb {
     }
 
     /// Every known form (lemmas, plurals, conjugations), for matching free
-    /// text such as imported subtitles back to word ids.
+    /// text such as imported subtitles back to word ids. Built on each call
+    /// (about 0.2 s in a release build, 0.6 s in a debug one) rather than
+    /// kept: it is some 200,000 strings, wanted only when subtitles are
+    /// imported or a mined sentence is added to the deck.
     pub fn form_index(&self) -> FormIndex {
-        let mut stmt = self
+        // What each word brings to the choice between the words a form could
+        // belong to. Read once, not joined to every form.
+        let words: HashMap<i64, (String, i64, bool)> = self
             .conn
-            .prepare("SELECT DISTINCT form, word_id, tag = '' FROM forms")
-            .unwrap();
-        let rows: Vec<(String, i64, bool)> = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .prepare(&format!("SELECT id, lemma, rank, {TEACHABLE} FROM words"))
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?, r.get(3)?))))
             .map(|rows| rows.filter_map(|r| r.ok()).collect())
             .unwrap_or_default();
-        let mut exact = HashMap::new();
-        let mut folded = HashMap::new();
-        for (form, word_id, is_lemma) in rows {
-            let folded_form = tilde_core::srt::strip_accents(&form);
-            add_candidate(&mut exact, form, word_id, is_lemma);
-            add_candidate(&mut folded, folded_form, word_id, is_lemma);
+        // One row per (form, word). A form can be listed for a word under
+        // several tags, or under none: the empty tag is the word itself, but
+        // also spellings that come with it without a place in its tables
+        // ("dame" with "dar"), so only its lemma says which of them is the
+        // word.
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT form, word_id, MAX(tag != ''), MAX(tag != '' AND tag NOT LIKE 'imperativo|%')
+                 FROM forms GROUP BY form, word_id",
+            )
+            .unwrap();
+        let rows: Vec<(String, i64, bool, bool)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default();
+        let mut index = FormIndex { exact: HashMap::new(), folded: HashMap::new() };
+        for (form, word_id, tagged, not_just_imperative) in rows {
+            let Some((lemma, rank, teachable)) = words.get(&word_id) else {
+                continue;
+            };
+            let fit = (form != *lemma, !teachable, !tagged, tagged && !not_just_imperative, *rank, word_id);
+            // A form without accents is found as it is spelled, so only the
+            // others need an entry to be found without theirs.
+            let unaccented = tilde_core::srt::strip_accents(&form);
+            if unaccented != form {
+                keep_better(&mut index.folded, unaccented, fit);
+            }
+            keep_better(&mut index.exact, form, fit);
         }
-        let strip = |map: HashMap<String, (bool, Vec<i64>)>| {
-            map.into_iter().map(|(form, (_, ids))| (form, ids)).collect()
-        };
-        FormIndex { exact: strip(exact), folded: strip(folded) }
+        index
     }
 
     /// A verb (by its main part of speech) with a conjugation table. Nouns that
@@ -360,24 +414,38 @@ fn word_from_row(r: &rusqlite::Row) -> rusqlite::Result<WordCard> {
     })
 }
 
-/// The separate meanings in a gloss: "to be; to be present" → {"to be", "to be present"}.
-fn gloss_parts(gloss: Option<&str>) -> HashSet<String> {
+/// The separate meanings in a gloss: "to be; to be present" → {"be", "be present"}.
+/// Without the "to" of an infinitive or of an indirect object, so that
+/// "begin" and "to begin", or "them" and "to them", are one meaning.
+pub(crate) fn gloss_parts(gloss: Option<&str>) -> HashSet<String> {
     gloss
         .unwrap_or("")
         .split([';', ','])
         .map(|p| p.trim().to_lowercase())
+        .map(|p| p.strip_prefix("to ").map(|rest| rest.trim_start().to_string()).unwrap_or(p))
         .filter(|p| !p.is_empty())
         .collect()
 }
 
-/// Subtitle word lookup. A form that is itself a dictionary word counts for
-/// that word only: "madre" is also listed as the feminine of "padre", and
-/// "casa" as a form of "casar", but a sentence saying "madre" or "casa" is
-/// about those words. Exact spelling wins over the accent-free fallback, so
-/// "mi" (my) and "mí" (me) stay apart.
+/// Subtitle word lookup: each written form leads to the one word it most
+/// likely belongs to. A card for every word a form could belong to would
+/// teach "crear" to someone whose film said "creo".
+///
+/// A form that is itself a dictionary word is that word: "madre" is also
+/// listed as the feminine of "padre", and "casa" as a form of "casar", but a
+/// sentence saying "madre" or "casa" is about those words. Otherwise it goes
+/// to a word that can be taught, for which it is a regular form rather than
+/// a spelling only listed with it ("ves" is in the tables of "ver", and
+/// merely listed with "ir"), and not only as an imperative ("sé" is "I know"
+/// far more often than "be!"); among those, to the commonest.
+///
+/// Exact spelling wins over the accent-free fallback, so "mi" (my) and "mí"
+/// (me) stay apart.
 pub struct FormIndex {
-    exact: HashMap<String, Vec<i64>>,
-    folded: HashMap<String, Vec<i64>>,
+    /// Each form, with the word that fits it best.
+    exact: HashMap<String, Fit>,
+    /// The forms that have accents, without them.
+    folded: HashMap<String, Fit>,
 }
 
 impl tilde_core::srt::WordMatcher for FormIndex {
@@ -385,7 +453,7 @@ impl tilde_core::srt::WordMatcher for FormIndex {
         self.exact
             .get(form)
             .or_else(|| self.folded.get(form))
-            .cloned()
+            .map(|fit| vec![fit.5])
             .unwrap_or_default()
     }
 
@@ -394,16 +462,14 @@ impl tilde_core::srt::WordMatcher for FormIndex {
     }
 }
 
-/// Adds `word_id` under `form`, keeping only lemma matches once there is one.
-fn add_candidate(map: &mut HashMap<String, (bool, Vec<i64>)>, form: String, word_id: i64, is_lemma: bool) {
-    let (has_lemma, ids) = map.entry(form).or_insert((false, Vec::new()));
-    if is_lemma && !*has_lemma {
-        *has_lemma = true;
-        ids.clear();
-    }
-    if (is_lemma || !*has_lemma) && !ids.contains(&word_id) {
-        ids.push(word_id);
-    }
+/// How well a word fits a written form, smallest first: (not its dictionary
+/// form, not teachable, only listed with it, only an imperative, rank, word id).
+/// The id is last: it settles a tie, and it is what a lookup answers with.
+type Fit = (bool, bool, bool, bool, i64, i64);
+
+/// Keeps under `form` whichever word fits it better.
+fn keep_better(map: &mut HashMap<String, Fit>, form: String, fit: Fit) {
+    map.entry(form).and_modify(|best| *best = fit.min(*best)).or_insert(fit);
 }
 
 #[cfg(test)]
@@ -476,13 +542,118 @@ mod tests {
 
     #[test]
     fn the_word_id_set_holds_every_word() {
-        let content = ContentDb::open(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/resources/content.db"))).unwrap();
+        let content = bundled();
         let words: i64 = content.conn.query_row("SELECT COUNT(*) FROM words", [], |r| r.get(0)).unwrap();
         assert!(words > 0);
         assert_eq!(content.word_ids().len() as i64, words);
         let (lowest, highest): (i64, i64) = content.conn.query_row("SELECT MIN(id), MAX(id) FROM words", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert!(content.word_ids().contains(&lowest) && content.word_ids().contains(&highest));
         assert!(!content.word_ids().contains(&(highest + 1)));
+    }
+
+    fn bundled() -> ContentDb {
+        ContentDb::open(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/resources/content.db"))).unwrap()
+    }
+
+    #[test]
+    fn a_gloss_is_split_into_its_meanings() {
+        let parts = |gloss: &str| {
+            let mut parts: Vec<String> = gloss_parts(Some(gloss)).into_iter().collect();
+            parts.sort();
+            parts
+        };
+        assert_eq!(parts("to be; to be present, To exist"), ["be", "be present", "exist"]);
+        // "begin" is "to begin", and "them" is "to them"...
+        assert_eq!(parts("to begin"), parts("begin; "));
+        assert_eq!(parts("they, them"), ["them", "they"]);
+        assert_eq!(parts("to them, for them"), ["for them", "them"]);
+        // ...but "to" is a meaning itself, and so is what only starts with it
+        assert_eq!(parts("to; at; today, tomorrow"), ["at", "to", "today", "tomorrow"]);
+        assert!(gloss_parts(None).is_empty());
+    }
+
+    #[test]
+    fn a_written_form_links_to_one_word() {
+        use tilde_core::srt::WordMatcher;
+        let content = bundled();
+        let index = content.form_index();
+        let lemma = |form: &str| -> Vec<String> {
+            index.lookup(form).iter().map(|id| content.word(*id).unwrap().lemma).collect()
+        };
+        for (form, word) in [
+            // a form of two verbs goes to the commoner one,
+            ("creo", "creer"),
+            // the plural to its noun, not to the noun's feminine,
+            ("niños", "niño"),
+            // a form in one word's tables to that word, not to a commoner
+            // one it is only listed with,
+            ("ves", "ver"),
+            // a form that is one word's imperative and nothing else to the
+            // word where it is more,
+            ("sé", "saber"),
+            // and a dictionary form to its own word, as spelled
+            ("madre", "madre"),
+            ("mi", "mi"),
+            ("mí", "mí"),
+        ] {
+            assert_eq!(lemma(form), [word], "{form}");
+        }
+        // without its accent a form is still found, where no other word is spelled so
+        assert_eq!(lemma("tambien"), ["también"]);
+        assert!(index.knows("también") && !index.knows("tambien"));
+        assert!(lemma("zzzz").is_empty());
+
+        // never more than one, whatever the form
+        let forms: Vec<String> = {
+            let mut stmt = content.conn.prepare("SELECT DISTINCT form FROM forms").unwrap();
+            let rows = stmt.query_map([], |r| r.get(0)).unwrap();
+            rows.map(|r| r.unwrap()).collect()
+        };
+        assert!(forms.len() > 100_000);
+        for form in &forms {
+            assert_eq!(index.lookup(form).len(), 1, "{form}");
+            assert!(index.knows(form), "{form}");
+            assert!(index.lookup(&tilde_core::srt::strip_accents(form)).len() == 1, "{form} without accents");
+        }
+        // and a word's own name always leads to it
+        let mut stmt = content.conn.prepare("SELECT id, lemma FROM words").unwrap();
+        let words = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))).unwrap();
+        for (id, lemma) in words.map(|r| r.unwrap()) {
+            assert_eq!(index.lookup(&lemma), [id], "{lemma}");
+        }
+
+        // The order of preference, over every form: the word it is the name
+        // of, else a word that can be taught, else one that has it in its
+        // tables. Each word a form is listed with, as (id, those three).
+        let mut listed: HashMap<String, Vec<(i64, [bool; 3])>> = HashMap::new();
+        let mut stmt = content
+            .conn
+            .prepare(&format!(
+                "SELECT f.form, f.word_id, f.form = w.lemma, {TEACHABLE}, MAX(f.tag != '')
+                 FROM forms f JOIN words w ON w.id = f.word_id GROUP BY f.form, f.word_id"
+            ))
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, (r.get(1)?, [r.get(2)?, r.get(3)?, r.get(4)?]))))
+            .unwrap();
+        for (form, word) in rows.map(|r| r.unwrap()) {
+            listed.entry(form).or_default().push(word);
+        }
+        // how many forms each preference decided
+        let mut decided = [0; 3];
+        for (form, words) in &listed {
+            let picked = index.lookup(form)[0];
+            let (_, pick) = words.iter().find(|(id, _)| *id == picked).unwrap_or_else(|| panic!("{form} is not a form of the word it leads to"));
+            let mut rivals: Vec<[bool; 3]> = words.iter().map(|(_, is)| *is).collect();
+            for (i, count) in decided.iter_mut().enumerate() {
+                if rivals.iter().any(|is| is[i]) {
+                    assert!(pick[i], "{form}: preference {i} was passed over");
+                    *count += usize::from(rivals.iter().any(|is| !is[i]));
+                    rivals.retain(|is| is[i]);
+                }
+            }
+        }
+        assert!(decided.iter().all(|n| *n > 0), "a preference never decided anything: {decided:?}");
     }
 
     #[test]

@@ -822,22 +822,49 @@ fn sentences_list(
 
 #[tauri::command(async)]
 fn sentence_add_to_deck(state: tauri::State<AppState>, id: i64) -> Result<(), String> {
+    // The sentence is matched again, as an import would match it today,
+    // rather than read back from `mined_words`. What was stored at import
+    // may be from an older Tilde, which linked a form to every word it could
+    // belong to ("niños" to "niña" too), or from an older dictionary with
+    // words that have since left it; neither should become a card now.
+    //
+    // Matching takes the form index, and building it keeps the dictionary
+    // from every other command for a moment. So the sentence is read first:
+    // one that is no longer there has no words to add. Each lock is let go
+    // before the next is taken.
+    let stored = state
+        .user
+        .locked()
+        .query_row("SELECT es FROM mined WHERE id = ?1", [id], |r| r.get::<_, String>(0));
+    let es = match stored {
+        Ok(es) => es,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(()),
+        Err(e) => return Err(db::user_error(&e)),
+    };
+    let matcher = state.content.locked().form_index();
+    let said: Vec<i64> = tilde_core::srt::match_sentence(&es, &matcher)
+        .words
+        .into_iter()
+        .flat_map(|w| w.word_ids)
+        .collect();
     let mut conn = state.user.locked();
-    let content = state.content.locked();
-    db::in_transaction(&mut conn, |tx| {
-        tx.execute("UPDATE mined SET in_deck = 1 WHERE id = ?1", [id])?;
-        let word_ids: Vec<i64> = tx
-            .prepare("SELECT word_id FROM mined_words WHERE mined_id = ?1")?
-            .query_map([id], |r| r.get(0))?
-            .collect::<rusqlite::Result<_>>()?;
-        // a sentence mined under an older dictionary may name a word that
-        // has since left it: no card for that one
-        for wid in word_ids.into_iter().filter(|wid| content.word_ids().contains(wid)) {
-            deck::introduce(tx, wid)?;
-        }
-        Ok(())
-    })
-    .map_err(|e| db::user_error(&e))
+    db::in_transaction(&mut conn, |tx| add_sentence_words(tx, id, &es, &said))
+        .map_err(|e| db::user_error(&e))
+}
+
+/// Marks mined sentence `id` as added to the deck and gives each of
+/// `word_ids`, the words matched in its text `es`, a card. For use in a
+/// transaction. The progress was not locked while the text was matched: if
+/// the sentence under this id no longer reads `es` (it was deleted, or a
+/// backup with other sentences was restored), nothing is done.
+fn add_sentence_words(tx: &Connection, id: i64, es: &str, word_ids: &[i64]) -> rusqlite::Result<()> {
+    if tx.execute("UPDATE mined SET in_deck = 1 WHERE id = ?1 AND es = ?2", rusqlite::params![id, es])? == 0 {
+        return Ok(());
+    }
+    for wid in word_ids {
+        deck::introduce(tx, *wid)?;
+    }
+    Ok(())
 }
 
 // --- stats ---

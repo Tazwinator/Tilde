@@ -2044,20 +2044,134 @@ fn marking_an_unknown_word_known_does_nothing() {
 }
 
 #[test]
-fn adding_a_sentence_skips_words_not_in_content() {
+fn adding_a_sentence_adds_only_words_the_dictionary_has_today() {
     with_app(|app| {
-        let real = teachable(app)[0].word_id;
+        let frase = word_id(app, "frase");
         let orphan = orphan_ids(app, 1)[0];
+        // As mined when the dictionary still had the orphan's word. That
+        // link is not read back: the sentence is matched again, and matching
+        // gives only words of today's dictionary (content.rs,
+        // `a_written_form_links_to_one_word`), so there is nothing to skip.
+        // This fails if cards are ever made from the stored ids unchecked.
         user(app, |conn| {
             conn.execute_batch(&format!(
                 "INSERT INTO mined(id, es, created_at) VALUES (7, 'Una frase de antes.', 0);
-                 INSERT INTO mined_words(mined_id, word_id) VALUES (7, {real}), (7, {orphan});"
+                 INSERT INTO mined_words(mined_id, word_id) VALUES (7, {frase}), (7, {orphan});"
             ))
         })
         .unwrap();
         sentence_add_to_deck(app.state(), 7).unwrap();
-        assert_eq!(card(app, real), Some((0.0, 1)));
+        assert_eq!(card(app, frase), Some((0.0, 1)));
         assert_eq!(card(app, orphan), None, "a card was made for a word that doesn't exist");
+        assert_eq!(count(app, "cards"), 1);
+        assert!(sentences_list(app.state(), None, None).sentences[0].in_deck);
+
+        // a sentence that is no longer there adds nothing
+        sentence_add_to_deck(app.state(), 8).unwrap();
+        assert_eq!(count(app, "cards"), 1);
+    });
+}
+
+// --- one word per written form ---
+
+/// The id of the word with exactly this lemma.
+fn word_id(app: &tauri::App<MockRuntime>, lemma: &str) -> i64 {
+    let state = app.state::<AppState>();
+    let ids = state.content.lock().unwrap().word_ids_by_lemma(lemma);
+    *ids.first().unwrap_or_else(|| panic!("no word {lemma}"))
+}
+
+#[test]
+fn adding_a_sentence_to_the_deck_cards_the_words_it_says() {
+    let srt = "1\n00:00:01,000 --> 00:00:03,000\nNo lo sé, pero creo que salió.\n";
+    with_app(move |app| {
+        let report = mine(app, "test.srt", srt);
+        assert_eq!(report.sentences_added, 1);
+        // "creo" is also a form of "crear", and "sé" of "ser": the film said
+        // neither, and the import doesn't count them
+        let mut counted: Vec<&str> = report.top_words.iter().map(|w| w.lemma.as_str()).collect();
+        counted.sort();
+        assert_eq!(counted, ["creer", "saber", "salir"]);
+        assert_eq!(report.words_matched, 3);
+        assert_eq!(count(app, "mined_words"), 3);
+
+        let sentence = sentences_list(app.state(), None, None).sentences.remove(0);
+        sentence_add_to_deck(app.state(), sentence.id).unwrap();
+        for said in ["creer", "saber", "salir"] {
+            assert_eq!(card(app, word_id(app, said)), Some((0.0, 1)), "{said}");
+        }
+        for unsaid in ["crear", "ser"] {
+            assert_eq!(card(app, word_id(app, unsaid)), None, "{unsaid} was added to the deck");
+        }
+        assert_eq!(count(app, "cards"), 3);
+    });
+}
+
+#[test]
+fn adding_a_sentence_imported_by_an_older_version_uses_todays_matching() {
+    with_app(|app| {
+        // As older versions stored it: a form linked to every word it could
+        // belong to ("niños" to "niña" as well), and a verb form missed.
+        let linked = ["niño", "niña", "parque"].map(|lemma| word_id(app, lemma));
+        user(app, |conn| {
+            conn.execute("INSERT INTO mined(id, es, created_at) VALUES (3, 'Mañana vamos al parque con los niños.', 0)", []).unwrap();
+            for id in linked {
+                conn.execute("INSERT INTO mined_words(mined_id, word_id) VALUES (3, ?1)", [id]).unwrap();
+            }
+        });
+        // A card such a link made back then, reviewed since, and one for a
+        // word of this sentence that is already known.
+        let (crear, parque) = (word_id(app, "crear"), word_id(app, "parque"));
+        insert_cards(app, &[crear, parque], 2, 0);
+        sentence_add_to_deck(app.state(), 3).unwrap();
+
+        for said in ["mañana", "ir", "niño"] {
+            assert_eq!(card(app, word_id(app, said)), Some((0.0, 1)), "{said}");
+        }
+        assert_eq!(card(app, word_id(app, "niña")), None, "a sentence about boys put 'niña' in the deck");
+        // cards there already are the player's progress: kept as they are,
+        // whatever made them
+        assert_eq!((card(app, crear), card(app, parque)), (Some((100.0, 2)), Some((100.0, 2))));
+        assert_eq!(count(app, "cards"), 5);
+        assert!(sentences_list(app.state(), None, None).sentences[0].in_deck);
+        // what was stored at import is left as it was
+        assert_eq!(count(app, "mined_words"), 3);
+    });
+}
+
+#[test]
+fn adding_a_sentence_that_is_gone_does_not_wait_for_the_dictionary() {
+    with_app(|app| {
+        let state = app.state::<AppState>();
+        // another command has the dictionary: a session being put together, a search
+        let dictionary = state.content.lock().unwrap();
+        let (tx, rx) = mpsc::channel();
+        std::thread::scope(|s| {
+            let state = state.clone();
+            s.spawn(move || tx.send(sentence_add_to_deck(state, 8)));
+            let returned = rx.recv_timeout(Duration::from_secs(5));
+            drop(dictionary);
+            // there is nothing to match, so nothing to read the dictionary for
+            assert_eq!(returned, Ok(Ok(())), "a sentence that isn't there was held up by the dictionary");
+        });
+        assert_eq!(count(app, "cards"), 0);
+    });
+}
+
+#[test]
+fn words_matched_in_one_sentence_are_not_added_for_another() {
+    with_app(|app| {
+        let frase = word_id(app, "frase");
+        // The progress isn't locked while a sentence is matched. Here a
+        // backup was restored meanwhile, and the id is another sentence's.
+        sql(app, "INSERT INTO mined(id, es, created_at) VALUES (7, 'Otra frase distinta.', 0)");
+        user(app, |tx| add_sentence_words(tx, 7, "Una frase de antes.", &[frase])).unwrap();
+        assert_eq!(count(app, "cards"), 0, "the words of a sentence that is gone were added");
+        assert!(!sentences_list(app.state(), None, None).sentences[0].in_deck);
+
+        // the sentence as it was matched: marked, and its words added
+        user(app, |tx| add_sentence_words(tx, 7, "Otra frase distinta.", &[frase])).unwrap();
+        assert_eq!(card(app, frase), Some((0.0, 1)));
         assert!(sentences_list(app.state(), None, None).sentences[0].in_deck);
     });
 }
