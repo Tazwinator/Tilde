@@ -556,9 +556,17 @@ pub struct Lemma {
     pub register: Option<&'static str>,
     /// (form, tag): tag is "" for the lemma or an untagged inflection,
     /// "plural"/"feminine plural"/…, "participio", or "tense|person" for verbs.
-    /// Without the forms listed in curation/exclude.txt.
+    /// Without the forms listed in curation/exclude.txt, and without the
+    /// gendered forms of a noun, pronoun or article whose counterpart is a
+    /// word of its own (see `drop_counterparts`).
     pub forms: Vec<(String, String)>,
     pub conjugations: Vec<Conjugation>,
+    /// The forms that are only this verb's *vos* forms ("tenés", "tené"): in
+    /// no other cell of its table. They are in `forms` too, so a search finds
+    /// the verb, but a sentence written with one isn't Castilian (see
+    /// `sentences::Linker::voseo`). A name spelled like one ("Tomás") is no
+    /// form at all once it is listed in curation/exclude.txt.
+    pub voseo: Vec<String>,
 }
 
 /// A hand-written gloss, and part of speech when Wiktionary's first entry
@@ -666,7 +674,18 @@ fn build_lemma(
     let mut conjugations: Vec<Conjugation> = Vec::new();
     // one table per lemma: later verb entries are usually rare homographs
     let mut table_done = false;
+    // spellings of the vos cells, and of every other cell, of all its tables
+    let mut vos: HashSet<&str> = HashSet::new();
+    let mut not_vos: HashSet<&str> = HashSet::new();
+    // what the letter-name entries list: no forms of this word, even where
+    // pass 1 took "míes" (the plural of the Greek mi) for a plural of "mi"
+    let mut of_letter: HashSet<&str> = HashSet::new();
     for e in entries {
+        // "es" is the plural of the letter e, not a form of "e" (and)
+        if names_a_letter(e, word) {
+            of_letter.extend(e.forms.iter().map(|f| f.form.as_str()));
+            continue;
+        }
         let is_verb = e.pos == "verb";
         for f in &e.forms {
             if f.form.is_empty() || f.form == "-" || f.form.contains(' ') {
@@ -674,6 +693,12 @@ fn build_lemma(
             }
             let from_table = f.source.as_deref() == Some("conjugation");
             if is_verb && from_table {
+                let has = |t: &str| f.tags.iter().any(|x| x == t);
+                if has("vos-form") {
+                    vos.insert(&f.form);
+                } else if !TABLE_NOTES.iter().any(|t| has(t)) {
+                    not_vos.insert(&f.form);
+                }
                 if table_done || !verb {
                     continue;
                 }
@@ -701,7 +726,7 @@ fn build_lemma(
         table_done |= !conjugations.is_empty();
     }
     for f in inflections {
-        if !forms.iter().any(|(x, _)| *x == f) {
+        if !of_letter.contains(f.as_str()) && !forms.iter().any(|(x, _)| *x == f) {
             forms.push((f, String::new()));
         }
     }
@@ -711,6 +736,16 @@ fn build_lemma(
     forms.retain(|(f, _)| !excluded(f));
     forms.sort();
     forms.dedup();
+    // "sé" is the vos imperative of ser and its tú imperative: not voseo.
+    // Nor is a spelling the word has for another reason.
+    let voseo: Vec<String> = forms
+        .iter()
+        .filter(|(f, tag)| tag.is_empty() && f != word)
+        .map(|(f, _)| f.as_str())
+        .filter(|f| vos.contains(f) && !not_vos.contains(f))
+        .filter(|f| forms.iter().filter(|(x, _)| x == f).count() == 1)
+        .map(str::to_string)
+        .collect();
     Some(Lemma {
         lemma: word.to_string(),
         pos,
@@ -720,7 +755,51 @@ fn build_lemma(
         register,
         forms,
         conjugations,
+        voseo,
     })
+}
+
+/// Rows of a conjugation table that describe it rather than hold a form.
+const TABLE_NOTES: [&str; 3] = ["table-tags", "inflection-template", "class"];
+
+/// An entry all of whose senses name a letter or a note ("e", the letter):
+/// its plural is no form of the word that happens to be spelled like it.
+fn names_a_letter(e: &FullEntry, word: &str) -> bool {
+    let mut senses = e.senses.iter().filter_map(|s| sense(s, word)).peekable();
+    senses.peek().is_some() && senses.all(|s| s.letter)
+}
+
+/// A noun's, pronoun's or article's counterpart of the other gender is a word
+/// of its own when it is on the list: "padre" is no form of madre, nor "él" of
+/// ella. Such a word loses every form of that gender ("padres" too), so the
+/// counterpart's sentences aren't its examples. Adjectives and determiners
+/// keep theirs: "nueva" is a form of nuevo even where it is also listed as a
+/// noun. Returns the number of form rows removed.
+pub fn drop_counterparts(words: &mut [Lemma]) -> usize {
+    let headwords: HashSet<String> = words.iter().map(|w| w.lemma.to_lowercase()).collect();
+    let mut dropped = 0;
+    for w in words.iter_mut() {
+        if !matches!(w.pos.as_str(), "noun" | "pron" | "article") {
+            continue;
+        }
+        let own = w.lemma.to_lowercase();
+        let genders: Vec<&str> = ["masculine", "feminine"]
+            .into_iter()
+            .filter(|g| {
+                w.forms.iter().any(|(f, tag)| {
+                    let f = f.to_lowercase();
+                    tag == g && f != own && headwords.contains(&f)
+                })
+            })
+            .collect();
+        let before = w.forms.len();
+        // rows, not spellings: padre keeps "padres" the plural and loses
+        // "padres" the "feminine masculine plural"
+        w.forms
+            .retain(|(_, tag)| !tag.split(' ').any(|t| genders.contains(&t)));
+        dropped += before - w.forms.len();
+    }
+    dropped
 }
 
 /// Maps a Wiktionary conjugation-table cell to the app's (tense, person).
@@ -1239,6 +1318,49 @@ mod tests {
     }
 
     #[test]
+    fn vos_forms_are_marked_unless_they_are_something_else_too() {
+        const TENES: &str = r#"{"word":"tenés","pos":"verb","lang_code":"es","senses":[{"glosses":["second-person singular voseo present indicative of tener"],"tags":["form-of"],"form_of":[{"word":"tener"}]}]}"#;
+        // "tenés" is in the forms (pass 1 saw it), though in no slot of the table
+        let tener = detail("tener", &[TENER, TENGO, TENES]).unwrap();
+        assert!(tener.forms.contains(&("tenés".into(), String::new())));
+        assert_eq!(tener.voseo, ["tenés"]);
+        // "sé" is ser's vos imperative and its tú imperative; "sos" is only vos
+        let ser = [
+            r#"{"word":"ser","pos":"verb","lang_code":"es","senses":[{"glosses":["to be"]}],"forms":[
+                {"form":"sos","tags":["indicative","informal","present","second-person","singular","vos-form"],"source":"conjugation"},
+                {"form":"eres","tags":["indicative","informal","present","second-person","singular"],"source":"conjugation"},
+                {"form":"sé","tags":["imperative","informal","second-person","singular"],"source":"conjugation"},
+                {"form":"sé","tags":["imperative","informal","second-person","singular","vos-form"],"source":"conjugation"}]}"#,
+            r#"{"word":"sos","pos":"verb","lang_code":"es","senses":[{"glosses":["second-person singular voseo present indicative of ser"],"tags":["form-of"],"form_of":[{"word":"ser"}]}]}"#,
+        ];
+        assert_eq!(detail("ser", &ser).unwrap().voseo, ["sos"]);
+        // "Tomás" is the name far more often than "vos tomás": the spelling
+        // is in curation/exclude.txt, so tomar has no such form at all
+        let tomar = [
+            r#"{"word":"tomar","pos":"verb","lang_code":"es","senses":[{"glosses":["to take"]}],"forms":[
+                {"form":"tomás","tags":["indicative","informal","present","second-person","singular","vos-form"],"source":"conjugation"},
+                {"form":"tomá","tags":["imperative","informal","second-person","singular","vos-form"],"source":"conjugation"}]}"#,
+            r#"{"word":"tomás","pos":"verb","lang_code":"es","senses":[{"glosses":["second-person singular voseo present indicative of tomar"],"tags":["form-of"],"form_of":[{"word":"tomar"}]}]}"#,
+            r#"{"word":"tomá","pos":"verb","lang_code":"es","senses":[{"glosses":["second-person singular voseo imperative of tomar"],"tags":["form-of"],"form_of":[{"word":"tomar"}]}]}"#,
+            r#"{"word":"Tomás","pos":"name","lang_code":"es","senses":[{"glosses":["a male given name"]}]}"#,
+        ];
+        let tomar = detail("tomar", &tomar).unwrap();
+        assert_eq!(tomar.voseo, ["tomá"]);
+        assert!(!tomar.forms.iter().any(|(f, _)| f == "tomás"));
+        // that list is the only way out: a vos form Wiktionary also knows as
+        // a name ("Salvá" is a surname) is a vos form like any other
+        let salvar = [
+            r#"{"word":"salvar","pos":"verb","lang_code":"es","senses":[{"glosses":["to save"]}],"forms":[
+                {"form":"salvá","tags":["imperative","informal","second-person","singular","vos-form"],"source":"conjugation"}]}"#,
+            r#"{"word":"salvá","pos":"verb","lang_code":"es","senses":[{"glosses":["second-person singular voseo imperative of salvar"],"tags":["form-of"],"form_of":[{"word":"salvar"}]}]}"#,
+            r#"{"word":"Salvá","pos":"name","lang_code":"es","senses":[{"glosses":["a surname"]}]}"#,
+        ];
+        assert_eq!(detail("salvar", &salvar).unwrap().voseo, ["salvá"]);
+        // a noun has no vos forms, whatever its verb homograph's table says
+        assert!(detail("casa", &[CASA_NOUN]).unwrap().voseo.is_empty());
+    }
+
+    #[test]
     fn nouns_get_inflections_and_no_conjugations() {
         let idx = index(&[CASA_NOUN]);
         let wanted: HashSet<String> = ["casa".to_string()].into();
@@ -1246,6 +1368,197 @@ mod tests {
         assert!(casa.conjugations.is_empty());
         assert!(casa.forms.contains(&("casas".into(), "plural".into())));
         assert_eq!(casa.pos, "noun");
+    }
+
+    #[test]
+    fn letter_name_entries_add_no_forms() {
+        // "es" is the plural of the letter, and nearly always the verb
+        let e = detail(
+            "e",
+            &[
+                r#"{"word":"e","pos":"conj","lang_code":"es","senses":[{"glosses":["and (used before words that begin with an i sound)"]}]}"#,
+                r#"{"word":"e","pos":"noun","lang_code":"es","senses":[{"glosses":["The name of the Latin-script letter E/e."],"tags":["feminine"]}],"forms":[{"form":"es","tags":["plural"]}]}"#,
+            ],
+        )
+        .unwrap();
+        assert_eq!(e.forms, [("e".to_string(), String::new())]);
+        // "mi" is a noun too (the note), so pass 1 takes "míes", the plural
+        // of the Greek letter, for its plural: still not a form of "mi"
+        let mi = detail(
+            "mi",
+            &[
+                r#"{"word":"mi","pos":"det","lang_code":"es","senses":[{"glosses":["apocopic form of mío, my"],"tags":["alt-of","apocopic"],"alt_of":[{"word":"mío"}]}],"forms":[{"form":"mis","tags":["plural"]}]}"#,
+                r#"{"word":"mi","pos":"noun","lang_code":"es","senses":[{"glosses":["mu; the Greek letter Μ, μ"],"tags":["feminine"]}],"forms":[{"form":"míes","tags":["plural"]}]}"#,
+                r#"{"word":"mi","pos":"noun","lang_code":"es","senses":[{"glosses":["mi"],"tags":["masculine"]}],"forms":[{"form":"mis","tags":["plural"]}]}"#,
+                r#"{"word":"míes","pos":"noun","lang_code":"es","senses":[{"glosses":["plural of mi"],"tags":["form-of","plural"],"form_of":[{"word":"mi"}]}]}"#,
+                r#"{"word":"mis","pos":"noun","lang_code":"es","senses":[{"glosses":["plural of mi"],"tags":["form-of","plural"],"form_of":[{"word":"mi"}]}]}"#,
+            ],
+        )
+        .unwrap();
+        assert_eq!(forms_of(&mi), [("mi", ""), ("mis", "plural")]);
+        // an entry that also means something else keeps its forms
+        let delta = detail(
+            "delta",
+            &[
+                r#"{"word":"delta","pos":"noun","lang_code":"es","senses":[{"glosses":["delta (Greek letter)"]},{"glosses":["delta (landform at the mouth of a river)"]}],"forms":[{"form":"deltas","tags":["plural"]}]}"#,
+            ],
+        )
+        .unwrap();
+        assert!(delta.forms.contains(&("deltas".into(), "plural".into())));
+    }
+
+    fn listed(lemma: &str, pos: &str, forms: &[(&str, &str)]) -> Lemma {
+        let mut all = vec![(lemma.to_string(), String::new())];
+        all.extend(forms.iter().map(|(f, t)| (f.to_string(), t.to_string())));
+        all.sort();
+        Lemma {
+            lemma: lemma.to_string(),
+            pos: pos.to_string(),
+            gloss: "gloss".to_string(),
+            gloss_es: None,
+            region: None,
+            register: None,
+            forms: all,
+            conjugations: Vec::new(),
+            voseo: Vec::new(),
+        }
+    }
+
+    fn forms_of(l: &Lemma) -> Vec<(&str, &str)> {
+        l.forms
+            .iter()
+            .map(|(f, t)| (f.as_str(), t.as_str()))
+            .collect()
+    }
+
+    #[test]
+    fn a_nouns_counterpart_is_not_its_form() {
+        // the rows Wiktionary's noun tables give the two words
+        let mut words = [
+            listed(
+                "madre",
+                "noun",
+                &[
+                    ("madres", "plural"),
+                    ("padre", "masculine"),
+                    ("padres", "masculine plural"),
+                ],
+            ),
+            listed(
+                "padre",
+                "noun",
+                &[
+                    ("madre", "feminine"),
+                    ("madres", "feminine plural"),
+                    ("padres", "feminine masculine plural"),
+                    ("padres", "plural"),
+                    ("padrecito", ""),
+                ],
+            ),
+        ];
+        assert_eq!(drop_counterparts(&mut words), 5);
+        assert_eq!(forms_of(&words[0]), [("madre", ""), ("madres", "plural")]);
+        // rows go, not spellings: "padres" is still padre's plural
+        assert_eq!(
+            forms_of(&words[1]),
+            [("padre", ""), ("padrecito", ""), ("padres", "plural")]
+        );
+        // nothing left to drop
+        assert_eq!(drop_counterparts(&mut words), 0);
+    }
+
+    #[test]
+    fn pronouns_and_articles_lose_their_counterparts_too() {
+        let mut words = [
+            listed(
+                "ella",
+                "pron",
+                &[
+                    ("ellas", "plural"),
+                    ("ellos", "masculine plural"),
+                    ("él", "masculine"),
+                ],
+            ),
+            listed(
+                "él",
+                "pron",
+                &[
+                    ("ella", "feminine"),
+                    ("ellas", "feminine plural"),
+                    ("ellos", "masculine plural"),
+                ],
+            ),
+            listed(
+                "el",
+                "article",
+                &[
+                    ("la", "feminine"),
+                    ("las", "feminine plural"),
+                    ("los", "plural"),
+                ],
+            ),
+            listed(
+                "la",
+                "article",
+                &[
+                    ("el", "masculine"),
+                    ("las", "plural"),
+                    ("los", "masculine plural"),
+                ],
+            ),
+        ];
+        assert_eq!(drop_counterparts(&mut words), 8);
+        assert_eq!(forms_of(&words[0]), [("ella", ""), ("ellas", "plural")]);
+        // its own gender stays, whatever the tag calls it
+        assert_eq!(
+            forms_of(&words[1]),
+            [("ellos", "masculine plural"), ("él", "")]
+        );
+        assert_eq!(forms_of(&words[2]), [("el", ""), ("los", "plural")]);
+        assert_eq!(forms_of(&words[3]), [("la", ""), ("las", "plural")]);
+    }
+
+    #[test]
+    fn an_adjective_keeps_its_feminine_even_if_that_is_a_word() {
+        // "nueva" is also listed as a noun ("news"): "una casa nueva" is
+        // still nuevo, and the sentence's English says which it is
+        let nuevo = [
+            ("nueva", "feminine"),
+            ("nuevas", "feminine plural"),
+            ("nuevos", "masculine plural"),
+        ];
+        let este = [("esta", "feminine"), ("estas", "feminine plural")];
+        let mut words = [
+            listed("nuevo", "adj", &nuevo),
+            listed("nueva", "noun", &[("nuevas", "plural")]),
+            listed("este", "det", &este),
+            listed("esta", "pron", &[]),
+        ];
+        assert_eq!(drop_counterparts(&mut words), 0);
+        assert_eq!(
+            forms_of(&words[0]),
+            forms_of(&listed("nuevo", "adj", &nuevo))
+        );
+        assert_eq!(forms_of(&words[2]), forms_of(&listed("este", "det", &este)));
+    }
+
+    #[test]
+    fn a_counterpart_not_in_the_list_is_kept() {
+        let alcalde = [
+            ("alcaldes", "plural"),
+            ("alcaldesa", "feminine"),
+            ("alcaldesas", "feminine plural"),
+        ];
+        let mut words = [
+            listed("alcalde", "noun", &alcalde),
+            // a word that is only somebody's plural triggers nothing
+            listed("alcaldesas", "noun", &[]),
+        ];
+        assert_eq!(drop_counterparts(&mut words), 0);
+        assert_eq!(
+            forms_of(&words[0]),
+            forms_of(&listed("alcalde", "noun", &alcalde))
+        );
     }
 
     #[test]

@@ -50,8 +50,10 @@ CREATE TABLE sentences(
 CREATE TABLE sentence_links(
   sentence_id INTEGER NOT NULL REFERENCES sentences(id),
   word_id INTEGER NOT NULL REFERENCES words(id),
+  form TEXT NOT NULL DEFAULT '',      -- the token, lowercased, that is this word in the sentence
+  quality INTEGER NOT NULL DEFAULT 1, -- 0 = the English shows this word's gloss
   PRIMARY KEY(sentence_id, word_id));
-CREATE INDEX idx_sentence_links_word ON sentence_links(word_id);
+CREATE INDEX idx_sentence_links_word ON sentence_links(word_id, quality, sentence_id);
 ";
 
 /// Writes the database next to `out` and renames it into place once complete.
@@ -148,13 +150,14 @@ fn build(
             }
             let mut sentence = tx.prepare("INSERT INTO sentences(es, en) VALUES (?1, ?2)")?;
             let mut link = tx.prepare(
-                "INSERT OR IGNORE INTO sentence_links(sentence_id, word_id) VALUES (?1, ?2)",
+                "INSERT OR IGNORE INTO sentence_links(sentence_id, word_id, form, quality)
+                 VALUES (?1, ?2, ?3, ?4)",
             )?;
             for s in sentences {
                 sentence.execute(params![s.es, s.en])?;
                 let sid = tx.last_insert_rowid();
-                for wid in &s.word_ids {
-                    link.execute(params![sid, wid])?;
+                for l in &s.links {
+                    link.execute(params![sid, l.word_id, l.form, l.quality])?;
                 }
             }
             let mut m = tx.prepare("INSERT INTO meta(key, value) VALUES (?1, ?2)")?;
@@ -174,6 +177,7 @@ fn build(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sentences::Link;
 
     fn lemma(word: &str) -> Lemma {
         Lemma {
@@ -185,6 +189,7 @@ mod tests {
             register: None,
             forms: vec![(word.to_string(), String::new())],
             conjugations: Vec::new(),
+            voseo: Vec::new(),
         }
     }
 
@@ -196,11 +201,23 @@ mod tests {
     fn write_uses_given_ids_not_positions() {
         let out = scratch("ids");
         let words = [lemma("casa"), lemma("perro")];
-        let picked = [Picked {
-            es: "El perro duerme.".into(),
-            en: "The dog sleeps.".into(),
-            word_ids: vec![3],
-        }];
+        let link = |word_id, form: &str, quality| Link {
+            word_id,
+            form: form.into(),
+            quality,
+        };
+        let picked = [
+            Picked {
+                es: "El perro duerme.".into(),
+                en: "The dog sleeps.".into(),
+                links: vec![link(3, "perro", 0)],
+            },
+            Picked {
+                es: "Perros en casa.".into(),
+                en: "Pets indoors.".into(),
+                links: vec![link(3, "perros", 1), link(7, "casa", 1)],
+            },
+        ];
         write(&out, &words, &[7, 3], &picked, &[]).unwrap();
 
         let conn = Connection::open(&out).unwrap();
@@ -218,8 +235,31 @@ mod tests {
             [("casa".to_string(), 7), ("perro".to_string(), 3)]
         );
         assert_eq!(
-            rows("SELECT es, word_id FROM sentences JOIN sentence_links ON sentence_id = id"),
-            [("El perro duerme.".to_string(), 3)]
+            rows(
+                "SELECT es || '|' || form, word_id * 10 + quality
+                 FROM sentences JOIN sentence_links ON sentence_id = id
+                 ORDER BY sentence_id, word_id"
+            ),
+            [
+                ("El perro duerme.|perro".to_string(), 30),
+                ("Perros en casa.|perros".to_string(), 31),
+                ("Perros en casa.|casa".to_string(), 71)
+            ]
+        );
+        // a word's examples are read confirmed ones first, off the index
+        let plan: Vec<String> = conn
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT sentence_id, form FROM sentence_links
+                 WHERE word_id = 3 ORDER BY quality, sentence_id",
+            )
+            .unwrap()
+            .query_map([], |r| r.get(3))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert!(
+            plan.len() == 1 && plan[0].contains("idx_sentence_links_word"),
+            "{plan:?}"
         );
         assert_eq!(
             rows("SELECT value, 0 FROM meta WHERE key = 'version'"),

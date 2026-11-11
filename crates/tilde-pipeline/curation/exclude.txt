@@ -26,6 +26,7 @@ cia
 gene
 newton
 yuri
+tomás
 
 # English
 to

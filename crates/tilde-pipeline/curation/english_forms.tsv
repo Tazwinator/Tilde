@@ -1,0 +1,437 @@
+# English forms, to tell which word an example sentence shows.
+# A Spanish form can belong to two words ("vino" is wine, and "he came"):
+# the sentence goes to the one whose gloss its English translation uses. A
+# regular form is recognised by its ending ("dogs", "boxes", "walked",
+# "making", "stopped", "tried", "quickly"). The forms that can't be are
+# listed here:
+#   - irregular ones ("came", "children"), and every form of a word of two
+#     letters;
+#   - the forms in -er and -est, regular or not ("bigger", "easiest",
+#     "swimmer"): "butter", "corner" and "forest" end that way too;
+#   - the past of a verb in -ee ("agreed"): so do "seed" and "feed".
+# A gloss word matches each of its forms and the base it is a form of ("come"
+# and "came" match each other); two forms of one base don't match each other
+# ("was" is not "is").
+#
+# base<TAB>form,form,...   Lowercase words without spaces. A form may stand
+# under two bases ("better"). The build stops on a malformed row or a base
+# listed twice.
+#
+# A base is a word of its own: it is never taken for a regular form of a
+# shorter word ("early" is not "ear" with -ly). The last section lists words
+# for that reason alone. So a regular form must not be made a base: with a
+# line for "building", "is building" would no longer show "to build".
+#
+# Not here on purpose: the negatives of "do" ("don't" would show hacer in
+# every negative sentence) and a line for "not" (it would give "nos", the
+# plural of "no", every sentence with "nos" and a negative).
+
+# verbs, some with the one who does it: English often has that noun where
+# Spanish has the verb ("nada bien" is "he's a good swimmer")
+be	am,is,are,was,were,been,being,isn't,aren't,wasn't,weren't,i'm,you're,we're,they're,he's,she's,it's,that's,there's,here's,what's,who's,where's,when's,how's,why's
+have	has,had,having,hasn't,hadn't,i've,you've,we've,they've
+do	does,did,done,doing
+go	goes,went,gone,going
+come	came,coming
+see	saw,seen
+take	took,taken
+give	gave,given
+make	made
+say	said
+get	got,gotten
+know	knew,known
+think	thought,thinker
+find	found
+tell	told
+leave	left
+feel	felt
+bring	brought
+begin	began,begun,beginner
+keep	kept
+hold	held
+write	wrote,written,writer
+stand	stood
+hear	heard
+mean	meant
+meet	met
+run	ran,runner
+pay	paid
+sit	sat
+speak	spoke,spoken,speaker
+lead	led,leader
+grow	grew,grown
+lose	lost,loser
+fall	fell,fallen
+send	sent
+build	built,builder
+understand	understood
+draw	drew,drawn
+break	broke,broken
+spend	spent
+rise	rose,risen
+drive	drove,driven,driver
+buy	bought,buyer
+wear	wore,worn
+choose	chose,chosen
+eat	ate,eaten,eater
+drink	drank,drunk,drinker
+win	won,winner
+teach	taught,teacher
+catch	caught
+fight	fought,fighter
+throw	threw,thrown
+sell	sold,seller
+forget	forgot,forgotten
+fly	flew,flown
+hide	hid,hidden
+sing	sang,sung,singer
+swim	swam,swum,swimmer
+wake	woke,woken
+ride	rode,ridden
+shake	shook,shaken
+steal	stole,stolen
+bear	bore,born,borne
+lie	lay,lain,lying,liar
+die	dying
+lend	lent
+shoot	shot
+deal	dealt
+burn	burnt
+hang	hung
+bite	bit,bitten
+blow	blew,blown
+show	shown
+seek	sought
+sweep	swept
+weep	wept
+arise	arose,arisen
+awake	awoke,awoken
+beat	beaten
+become	became
+bend	bent
+bind	bound
+bleed	bled
+breed	bred
+cling	clung
+creep	crept
+dig	dug
+feed	fed
+flee	fled
+forbid	forbade,forbidden
+forgive	forgave,forgiven
+freeze	froze,frozen
+grind	ground
+kneel	knelt
+lay	laid
+light	lit,lighter,lightest
+mistake	mistook,mistaken
+overcome	overcame
+ring	rang,rung
+shine	shone
+shrink	shrank,shrunk
+sink	sank,sunk
+slide	slid
+speed	sped
+spin	spun
+spit	spat
+spring	sprang,sprung
+stick	stuck
+sting	stung
+strike	struck
+swear	swore,sworn
+swing	swung
+tear	tore,torn
+undo	undid,undone
+weave	wove,woven
+dream	dreamt,dreamer
+learn	learnt,learner
+smell	smelt
+spell	spelt
+spoil	spoilt
+lean	leant
+leap	leapt
+prove	proven
+swell	swollen
+sew	sewn
+sow	sown
+withdraw	withdrew,withdrawn
+tie	tying
+agree	agreed
+disagree	disagreed
+guarantee	guaranteed
+decree	decreed
+play	player
+work	worker
+read	reader
+dance	dancer
+smoke	smoker
+walk	walker
+talk	talker
+love	lover
+believe	believer
+kill	killer
+murder	murderer
+rob	robber
+rule	ruler
+paint	painter
+hunt	hunter
+use	user
+own	owner
+listen	listener
+help	helper
+call	caller
+pray	prayer
+travel	traveler,traveller
+
+# "extranjero" is foreign and a foreigner
+foreign	foreigner
+
+# modal verbs
+can	could,cannot,couldn't
+will	would,won't,wouldn't
+shall	should,shouldn't
+may	might
+
+# comparison
+good	better,best
+bad	worse,worst
+well	better
+many	more,most
+much	more,most
+little	less,least
+far	farther,further,farthest,furthest
+old	elder,eldest,older,oldest
+true	truly,truer,truest
+free	freed,freer,freest
+angry	angrier,angriest
+big	bigger,biggest
+bitter	bitterer,bitterest
+black	blacker,blackest
+blue	bluer,bluest
+brave	braver,bravest
+bright	brighter,brightest
+broad	broader,broadest
+busy	busier,busiest
+calm	calmer,calmest
+cheap	cheaper,cheapest
+clean	cleaner,cleanest
+clear	clearer,clearest
+clever	cleverer,cleverest
+close	closer,closest
+cold	colder,coldest
+cool	cooler,coolest
+crazy	crazier,craziest
+cruel	crueler,cruelest
+crunchy	crunchier,crunchiest
+curly	curlier,curliest
+cute	cuter,cutest
+dark	darker,darkest
+dear	dearer,dearest
+deep	deeper,deepest
+dirty	dirtier,dirtiest
+dry	drier,driest,dryer
+dull	duller,dullest
+dumb	dumber,dumbest
+early	earlier,earliest
+easy	easier,easiest
+faint	fainter,faintest
+fair	fairer,fairest
+fast	faster,fastest
+fat	fatter,fattest
+few	fewer,fewest
+fierce	fiercer,fiercest
+fine	finer,finest
+fit	fitter,fittest
+fresh	fresher,freshest
+friendly	friendlier,friendliest
+full	fuller,fullest
+funny	funnier,funniest
+gentle	gentler,gentlest
+grand	grander,grandest
+great	greater,greatest
+green	greener,greenest
+happy	happier,happiest
+hard	harder,hardest
+healthy	healthier,healthiest
+heavy	heavier,heaviest
+high	higher,highest
+hot	hotter,hottest
+hungry	hungrier,hungriest
+kind	kinder,kindest
+large	larger,largest
+late	later,latest
+lazy	lazier,laziest
+likely	likelier,likeliest
+long	longer,longest
+loud	louder,loudest
+lovely	lovelier,loveliest
+low	lower,lowest
+lucky	luckier,luckiest
+mild	milder,mildest
+narrow	narrower,narrowest
+near	nearer,nearest
+new	newer,newest
+nice	nicer,nicest
+noble	nobler,noblest
+noisy	noisier,noisiest
+poor	poorer,poorest
+pretty	prettier,prettiest
+proud	prouder,proudest
+pure	purer,purest
+quick	quicker,quickest
+quiet	quieter,quietest
+rare	rarer,rarest
+red	redder,reddest
+remote	remoter,remotest
+rich	richer,richest
+rough	rougher,roughest
+rude	ruder,rudest
+sad	sadder,saddest
+safe	safer,safest
+salty	saltier,saltiest
+scary	scarier,scariest
+sharp	sharper,sharpest
+short	shorter,shortest
+sick	sicker,sickest
+silly	sillier,silliest
+simple	simpler,simplest
+sincere	sincerer,sincerest
+slow	slower,slowest
+small	smaller,smallest
+smart	smarter,smartest
+smelly	smellier,smelliest
+smooth	smoother,smoothest
+soft	softer,softest
+soon	sooner,soonest
+sour	sourer,sourest
+spicy	spicier,spiciest
+stingy	stingier,stingiest
+strange	stranger,strangest
+strong	stronger,strongest
+stupid	stupider,stupidest
+subtle	subtler,subtlest
+sure	surer,surest
+sweet	sweeter,sweetest
+tall	taller,tallest
+tasty	tastier,tastiest
+thick	thicker,thickest
+thin	thinner,thinnest
+tidy	tidier,tidiest
+tight	tighter,tightest
+tiny	tinier,tiniest
+tough	tougher,toughest
+ugly	uglier,ugliest
+vile	viler,vilest
+warm	warmer,warmest
+weak	weaker,weakest
+wealthy	wealthier,wealthiest
+wet	wetter,wettest
+white	whiter,whitest
+wide	wider,widest
+wild	wilder,wildest
+wise	wiser,wisest
+young	younger,youngest
+
+# adjectives English uses where Spanish has the noun ("tener suerte" is to be
+# lucky, "de madera" is wooden)
+luck	lucky
+sleep	slept,sleepy,sleeper
+thirst	thirsty
+hunger	hungry
+guilt	guilty
+health	healthy
+success	successful
+jealousy	jealous
+ease	easy,easily
+sun	sunny
+rain	rainy
+wind	wound,windy
+cloud	cloudy
+snow	snowy
+fog	foggy
+storm	stormy
+dirt	dirty
+dust	dusty
+salt	salty
+noise	noisy
+fun	funny
+wood	wooden
+gold	golden
+day	daily
+north	northern
+south	southern
+east	eastern
+west	western
+blond	blonde
+
+# plurals
+child	children
+grandchild	grandchildren
+they	their,theirs
+man	men
+woman	women
+foot	feet
+tooth	teeth
+person	people
+mouse	mice
+wife	wives
+life	lives
+knife	knives
+leaf	leaves
+half	halves
+wolf	wolves
+shelf	shelves
+thief	thieves
+calf	calves
+loaf	loaves
+self	selves
+goose	geese
+ox	oxen
+crisis	crises
+thesis	theses
+analysis	analyses
+basis	bases
+phenomenon	phenomena
+criterion	criteria
+bacterium	bacteria
+
+# two spellings of one word (the glosses use both)
+colour	color
+favour	favor
+favourite	favorite
+flavour	flavor
+harbour	harbor
+honour	honor
+humour	humor
+labour	labor
+neighbour	neighbor
+rumour	rumor
+behaviour	behavior
+centre	center
+theatre	theater
+metre	meter
+litre	liter
+grey	gray
+programme	program
+cheque	check
+tyre	tire
+jewellery	jewelry
+defence	defense
+licence	license
+offence	offense
+mum	mom
+mummy	mommy
+pyjamas	pajamas
+moustache	mustache
+aeroplane	airplane
+catalogue	catalog
+dialogue	dialog
+realise	realize
+organise	organize
+recognise	recognize
+apologise	apologize
+analyse	analyze
+
+# words of their own that end like a form of a shorter one ("evening" is no
+# form of "even")
+evening	evenings

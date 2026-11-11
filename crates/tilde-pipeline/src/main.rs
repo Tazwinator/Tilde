@@ -106,6 +106,15 @@ fn main() {
             std::process::exit(1);
         });
 
+    // irregular English forms, to tell which reading a translation shows
+    let english = sentences::English::parse(include_str!("../curation/english_forms.tsv"))
+        .unwrap_or_else(|e| {
+            eprintln!("error: curation/english_forms.tsv: {e}");
+            std::process::exit(1);
+        });
+    // sentences judged wrong or misleading, never to be an example
+    let blocked = sentences::blocklist(include_str!("../curation/bad_sentences.txt"));
+
     println!("[1/5] sources");
     let fetch = |s: &sources::Source| {
         sources::fetch(s, &args.data).unwrap_or_else(|e| {
@@ -140,6 +149,8 @@ fn main() {
         .filter_map(|(w, _)| details.remove(w))
         .take(MAX_WORDS)
         .collect();
+    // needs the final list: a counterpart is a form until it is a word itself
+    let counterparts = lexicon::drop_counterparts(&mut words);
     let wanted: HashMap<String, String> = words
         .iter()
         .map(|w| (w.lemma.clone(), w.pos.clone()))
@@ -168,6 +179,7 @@ fn main() {
         "  words: {}  verbs with tables: {verbs}  Spanish definitions: {defined}",
         words.len()
     );
+    println!("  counterpart forms dropped: {counterparts}");
     println!("  unused curated definitions: {}", unused.len());
     // every one of them: each is a row to take out of the file
     for row in unused.chunks(10) {
@@ -205,12 +217,19 @@ fn main() {
         words
             .iter()
             .zip(&word_ids)
-            .flat_map(|(w, id)| w.forms.iter().map(move |(f, _)| (f.as_str(), *id))),
+            .map(|(w, id)| sentences::LinkWord {
+                id: *id,
+                lemma: &w.lemma,
+                gloss: &w.gloss,
+                forms: &w.forms,
+                voseo: &w.voseo,
+            }),
+        english,
     );
-    let picked = sentences::pick(&pairs, &linker);
+    let picked = sentences::pick(&pairs, &linker, &blocked);
     let with_examples: HashSet<i64> = picked
         .iter()
-        .flat_map(|p| p.word_ids.iter().copied())
+        .flat_map(|p| p.links.iter().map(|l| l.word_id))
         .collect();
     println!(
         "  {} of {} pairs picked; {} words have examples",
@@ -218,6 +237,64 @@ fn main() {
         pairs.len(),
         with_examples.len()
     );
+    let stale = sentences::not_found(&blocked, &pairs);
+    println!(
+        "  blocklisted sentences found: {} of {}",
+        blocked.len() - stale.len(),
+        blocked.len()
+    );
+    // each is a line to take out of the file
+    for line in &stale {
+        println!("    not in Tatoeba (curation/bad_sentences.txt): {line}");
+    }
+    let mut voseo: HashMap<String, usize> = HashMap::new();
+    for pair in &pairs {
+        if let Some(token) = linker.voseo(&sentences::tokens(&pair.es)) {
+            *voseo.entry(token.to_string()).or_default() += 1;
+        }
+    }
+    println!(
+        "  pairs written with vos forms, never picked: {}",
+        voseo.values().sum::<usize>()
+    );
+    // a name among these ("tomás") belongs in curation/exclude.txt
+    let mut tokens: Vec<(&String, &usize)> = voseo.iter().collect();
+    tokens.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+    let commonest: Vec<String> = tokens
+        .iter()
+        .take(8)
+        .map(|(token, n)| format!("{token} {n}"))
+        .collect();
+    println!("    most often for: {}", commonest.join(", "));
+    let (links, confirmed) = picked
+        .iter()
+        .flat_map(|p| &p.links)
+        .fold((0, 0), |(n, c), l| (n + 1, c + usize::from(l.quality == 0)));
+    println!("  links: {links}; the English shows the word's gloss in {confirmed}");
+    // what the app can show: it leaves out very short and very long sentences
+    let usable: HashSet<i64> = picked
+        .iter()
+        .filter(|p| (15..=140).contains(&p.es.chars().count()))
+        .flat_map(|p| p.links.iter().map(|l| l.word_id))
+        .collect();
+    let without = |top: usize| -> Vec<&str> {
+        words
+            .iter()
+            .zip(&word_ids)
+            .take(top)
+            .filter(|(_, id)| !usable.contains(id))
+            .map(|(w, _)| w.lemma.as_str())
+            .collect()
+    };
+    let (top_2000, top_5000) = (without(2_000), without(5_000));
+    println!(
+        "  without a usable example: {} of the top 2,000, {} of the top 5,000",
+        top_2000.len(),
+        top_5000.len()
+    );
+    for row in top_2000.chunks(10) {
+        println!("    {}", row.join(" "));
+    }
 
     let meta = [
         ("built_at", chrono_like_now()),

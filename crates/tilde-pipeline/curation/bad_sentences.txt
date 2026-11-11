@@ -1,0 +1,5 @@
+# Tatoeba sentences that must never be an example: ungrammatical, or
+# misleading about the word they would illustrate. One Spanish sentence per
+# line, as Tatoeba has it (case and outer spaces don't matter). Add a sentence
+# only after judging it; the build report names a line Tatoeba no longer has.
+Depende el contexto.
